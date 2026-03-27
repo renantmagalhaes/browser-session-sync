@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>Browser Session Sync</title>
+    <link
+      rel="stylesheet"
+      href="styles.css"
+    />
+  </head>
+  <body class="popup-page">
+    <div class="popup-container">
+      <div class="header">
+        <h1>Session Sync</h1>
+        <button
+          id="openSettings"
+          class="icon-button"
+          title="Settings"
+        >
+          ⚙️
+        </button>
+      </div>
+
+      <div class="status-section">
+        <div
+          id="statusMessage"
+          class="status-message"
+        ></div>
+        <p
+          id="lastSync"
+          class="last-sync"
+        ></p>
+      </div>
+
+      <div class="button-group">
+        <button
+          id="syncNow"
+          class="btn btn-primary"
+        >
+          💾 Sync Now
+        </button>
+        <button
+          id="refreshList"
+          class="btn btn-secondary"
+        >
+          🔄 Refresh
+        </button>
+      </div>
+
+      <div class="search-section">
+        <input
+          type="text"
+          id="searchInput"
+          class="search-input"
+          placeholder="Search sessions (title, URL, profile)..."
+        />
+      </div>
+
+      <div class="sessions-section">
+        <h2>Saved Sessions</h2>
+        <div
+          id="sessionsList"
+          class="sessions-list"
+        >
+          <p class="loading">
+            Loading sessions...
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

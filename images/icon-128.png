@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0366d6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#6f42c1;stop-opacity:1" />
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="url(#grad2)"/>
+  
+  <!-- Windows icon representation -->
+  <g filter="url(#shadow)">
+    <rect x="16" y="28" width="40" height="40" rx="4" fill="white" opacity="0.9"/>
+    <rect x="72" y="28" width="40" height="40" rx="4" fill="white" opacity="0.7"/>
+    <rect x="16" y="76" width="40" height="40" rx="4" fill="white" opacity="0.7"/>
+    <rect x="72" y="76" width="40" height="40" rx="4" fill="white" opacity="0.85"/>
+  </g>
+  
+  <!-- Sync arrows -->
+  <g stroke="white" stroke-width="3" fill="none" opacity="0.6">
+    <path d="M 64 8 L 72 16 L 56 16" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 64 120 L 56 112 L 72 112" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

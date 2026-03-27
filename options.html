@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>Session Sync Settings</title>
+    <link
+      rel="stylesheet"
+      href="styles.css"
+    />
+  </head>
+  <body>
+    <div class="options-container">
+      <h1>🔧 Session Sync Settings</h1>
+
+      <form
+        id="settingsForm"
+        class="settings-form"
+      >
+        <!-- GitHub Credentials Section -->
+        <fieldset>
+          <legend>
+            GitHub Authentication
+          </legend>
+          <div class="form-group">
+            <label for="githubUsername"
+              >GitHub Username:</label
+            >
+            <input
+              type="text"
+              id="githubUsername"
+              placeholder="your-github-username"
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="githubRepo"
+              >Repository Name:</label
+            >
+            <input
+              type="text"
+              id="githubRepo"
+              placeholder="my-sessions-repo"
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="githubToken"
+              >Personal Access Token
+              (PAT):</label
+            >
+            <input
+              type="password"
+              id="githubToken"
+              placeholder="ghp_..."
+              required
+            />
+            <small>
+              Create a token at
+              <a
+                href="https://github.com/settings/tokens"
+                target="_blank"
+              >
+                GitHub Settings →
+                Personal access tokens
+              </a>
+              with repo permissions
+              only.
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label for="showToken">
+              <input
+                type="checkbox"
+                id="showToken"
+              />
+              Show token
+            </label>
+          </div>
+        </fieldset>
+
+        <!-- Browser Profile Section -->
+        <fieldset>
+          <legend>
+            Browser Profile
+          </legend>
+          <div class="form-group">
+            <label for="profileName"
+              >Profile Name:</label
+            >
+            <input
+              type="text"
+              id="profileName"
+              placeholder="e.g., Work Laptop, Personal iMac"
+            />
+            <small
+              >A friendly name to
+              identify this browser when
+              syncing multiple
+              profiles.</small
+            >
+          </div>
+
+          <div class="form-group">
+            <label for="clientId"
+              >Client ID
+              (Auto-generated):</label
+            >
+            <input
+              type="text"
+              id="clientId"
+              disabled
+              readonly
+            />
+            <small
+              >Unique identifier for
+              this browser profile.
+              Created automatically on
+              first use.</small
+            >
+          </div>
+        </fieldset>
+
+        <!-- Sync Settings Section -->
+        <fieldset>
+          <legend>Sync Settings</legend>
+          <div class="form-group">
+            <label for="syncInterval"
+              >Auto-sync Interval
+              (minutes):</label
+            >
+            <input
+              type="number"
+              id="syncInterval"
+              min="0"
+              max="1440"
+              value="30"
+            />
+            <small>
+              How often to automatically
+              save sessions. Set to 0 to
+              disable auto-sync.
+              Recommended: 30 minutes.
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label>
+              <input
+                type="checkbox"
+                id="excludeLocalTabs"
+              />
+              Exclude local tabs
+              (localhost, file://)
+            </label>
+          </div>
+        </fieldset>
+
+        <!-- Status Section -->
+        <fieldset>
+          <legend>Status</legend>
+          <div
+            id="statusDisplay"
+            class="status-display"
+          >
+            <p id="lastSyncDisplay"></p>
+            <p id="clientIdDisplay"></p>
+          </div>
+        </fieldset>
+
+        <!-- Buttons -->
+        <div class="button-group">
+          <button
+            type="submit"
+            class="btn btn-primary"
+          >
+            💾 Save Settings
+          </button>
+          <button
+            type="reset"
+            class="btn btn-secondary"
+          >
+            ↩️ Reset
+          </button>
+          <button
+            type="button"
+            id="testConnection"
+            class="btn btn-secondary"
+          >
+            🔗 Test Connection
+          </button>
+        </div>
+
+        <div
+          id="message"
+          class="message"
+        ></div>
+      </form>
+
+      <!-- Advanced Section -->
+      <details class="advanced-section">
+        <summary>📋 Advanced</summary>
+        <div class="advanced-content">
+          <p>
+            Session data is stored in a
+            private GitHub repository
+            with the following
+            structure:
+          </p>
+          <code
+            >sessions/{clientId}/session-{timestamp}.json</code
+          >
+          <p>
+            Each file contains all open
+            windows and tabs from your
+            browser session in JSON
+            format.
+          </p>
+        </div>
+      </details>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>
