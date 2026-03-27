@@ -21,7 +21,17 @@ async function handleMessage(request) {
       console.log(
         "Processing saveSession"
       );
-      return await saveSessionToGitHub();
+      return await saveSessionToGitHub({
+        forceSnapshot: false
+      });
+
+    case "saveSnapshot":
+      console.log(
+        "Processing saveSnapshot"
+      );
+      return await saveSessionToGitHub({
+        forceSnapshot: true
+      });
 
     case "listSessions":
       console.log(
@@ -322,28 +332,51 @@ async function putGitHubJson(
   const repoUrl = await getRepoUrl();
   const headers =
     await getGitHubHeaders();
-  const response = await fetch(
-    `${repoUrl}/contents/${path}`,
-    {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({
-        message,
-        content: encodeBase64Utf8(
-          JSON.stringify(data, null, 2)
-        ),
-        ...(sha ? { sha } : {})
-      })
-    }
-  );
+  let currentSha = sha;
 
-  if (!response.ok) {
-    throw new Error(
-      await parseGitHubError(response)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await fetch(
+      `${repoUrl}/contents/${path}`,
+      {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          message,
+          content: encodeBase64Utf8(
+            JSON.stringify(data, null, 2)
+          ),
+          ...(currentSha
+            ? { sha: currentSha }
+            : {})
+        })
+      }
     );
+
+    if (response.ok) {
+      return await response.json();
+    }
+
+    const errorMessage =
+      await parseGitHubError(response);
+    const shouldRetryWithFreshSha =
+      attempt === 0 &&
+      response.status === 422 &&
+      errorMessage.includes("sha");
+
+    if (!shouldRetryWithFreshSha) {
+      throw new Error(errorMessage);
+    }
+
+    const existingFile =
+      await fetchGitHubJson(path);
+    currentSha = existingFile.exists
+      ? existingFile.sha
+      : undefined;
   }
 
-  return await response.json();
+  throw new Error(
+    `Failed to write ${path}`
+  );
 }
 
 async function deleteGitHubFile(
@@ -428,7 +461,8 @@ function buildSearchText(
 function buildSessionSummary(
   sessionData,
   path,
-  sha
+  sha,
+  kind = "history"
 ) {
   const tabs = sessionData.windows.flatMap(
     (windowData) => windowData.tabs
@@ -437,6 +471,7 @@ function buildSessionSummary(
   return {
     path,
     sha,
+    kind,
     timestamp: sessionData.timestamp,
     browserAlias:
       sessionData.browserAlias,
@@ -462,11 +497,18 @@ function buildSessionSummary(
 function applyRetention(
   sessionEntries
 ) {
-  const kept = [];
+  const pinned = sessionEntries.filter(
+    (session) => session.kind === "latest"
+  );
+  const historyEntries =
+    sessionEntries.filter(
+      (session) => session.kind !== "latest"
+    );
+  const keptHistory = [];
   const pruned = [];
   const countByClient = new Map();
 
-  const sorted = [...sessionEntries].sort(
+  const sorted = [...historyEntries].sort(
     (a, b) =>
       new Date(b.timestamp) -
       new Date(a.timestamp)
@@ -474,19 +516,24 @@ function applyRetention(
 
   for (const session of sorted) {
     const key =
-      session.clientId || "unknown";
+      session.profileKey ||
+      session.clientId ||
+      "unknown";
     const count =
       countByClient.get(key) || 0;
 
     if (count < MAX_HISTORY_PER_CLIENT) {
-      kept.push(session);
+      keptHistory.push(session);
       countByClient.set(key, count + 1);
     } else {
       pruned.push(session);
     }
   }
 
-  return { kept, pruned };
+  return {
+    kept: [...pinned, ...keptHistory],
+    pruned
+  };
 }
 
 function isLegacySessionFile(entry) {
@@ -559,9 +606,24 @@ async function buildIndexFromRepository() {
               );
 
             if (summary) {
+              summary.kind = "history";
               summaries.push(summary);
             }
           }
+        }
+      } else if (
+        clientEntry.type === "file" &&
+        clientEntry.name === "latest.json"
+      ) {
+        const summary =
+          await readSessionSummary(
+            clientEntry.path,
+            clientEntry.sha
+          );
+
+        if (summary) {
+          summary.kind = "latest";
+          summaries.push(summary);
         }
       } else if (
         isLegacySessionFile(clientEntry)
@@ -573,6 +635,7 @@ async function buildIndexFromRepository() {
           );
 
         if (summary) {
+          summary.kind = "history";
           summaries.push(summary);
         }
       }
@@ -592,7 +655,13 @@ async function loadSessionIndex() {
     await fetchGitHubJson(INDEX_PATH);
 
   if (indexFile.exists) {
-    return normalizeIndex(indexFile.data);
+    const normalized = normalizeIndex(
+      indexFile.data
+    );
+
+    if (normalized.sessions.length > 0) {
+      return normalized;
+    }
   }
 
   const rebuiltIndex =
@@ -658,7 +727,23 @@ async function computeSessionSignature(
     .join("");
 }
 
-async function saveSessionToGitHub() {
+function isSameCalendarDay(
+  isoA,
+  isoB
+) {
+  if (!isoA || !isoB) {
+    return false;
+  }
+
+  return (
+    isoA.slice(0, 10) ===
+    isoB.slice(0, 10)
+  );
+}
+
+async function saveSessionToGitHub(
+  options = {}
+) {
   try {
     const clientId =
       await initializeClientId();
@@ -670,6 +755,9 @@ async function saveSessionToGitHub() {
       );
     const alias =
       profileName || "Default Browser";
+    const forceSnapshot = Boolean(
+      options.forceSnapshot
+    );
 
     const windows =
       await chrome.windows.getAll({
@@ -695,15 +783,17 @@ async function saveSessionToGitHub() {
       await computeSessionSignature(
         sessionData
       );
-    const localState =
-      await chrome.storage.local.get([
-        "lastSessionSignature"
-      ]);
+    const latestPath = `${SESSIONS_DIR}/${profileStorageKey}/latest.json`;
+    const latestFile =
+      await fetchGitHubJson(latestPath);
+    const latestSignature =
+      latestFile.exists
+        ? latestFile.data.signature
+        : null;
+    const hasChanged =
+      latestSignature !== signature;
 
-    if (
-      localState.lastSessionSignature ===
-      signature
-    ) {
+    if (!hasChanged && !forceSnapshot) {
       await chrome.storage.sync.set({
         lastSyncTime:
           new Date().toISOString(),
@@ -713,48 +803,88 @@ async function saveSessionToGitHub() {
         success: true,
         skipped: true,
         message:
-          "Session unchanged; skipped creating a new snapshot."
+          "Session unchanged; latest state is already up to date."
       };
     }
 
-    const latestPath = `${SESSIONS_DIR}/${profileStorageKey}/latest.json`;
+    sessionData.signature = signature;
     const historyPath = `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}.json`;
-    const latestFile =
-      await fetchGitHubJson(latestPath);
 
-    await putGitHubJson(
+    const latestResponse =
+      await putGitHubJson(
       latestPath,
       sessionData,
       `Update latest session for ${alias}`,
       latestFile.exists
         ? latestFile.sha
         : undefined
-    );
-
-    const historyResponse =
-      await putGitHubJson(
-        historyPath,
-        sessionData,
-        `Save session from ${alias} at ${sessionData.timestamp}`
-      );
-
-    const historySummary =
-      buildSessionSummary(
-        sessionData,
-        historyPath,
-        historyResponse.content.sha
       );
     const currentIndex =
       await loadSessionIndex();
+    const latestSummary =
+      buildSessionSummary(
+        sessionData,
+        latestPath,
+        latestResponse.content.sha,
+        "latest"
+      );
+    const currentProfileHistory =
+      currentIndex.sessions
+        .filter(
+          (session) =>
+            session.profileKey ===
+              profileStorageKey &&
+            session.kind === "history"
+        )
+        .sort(
+          (a, b) =>
+            new Date(b.timestamp) -
+            new Date(a.timestamp)
+        );
+    const mostRecentSnapshot =
+      currentProfileHistory[0];
+    const shouldCreateDailySnapshot =
+      forceSnapshot ||
+      !mostRecentSnapshot ||
+      !isSameCalendarDay(
+        mostRecentSnapshot.timestamp,
+        sessionData.timestamp
+      );
+
+    let historySummary = null;
+
+    if (shouldCreateDailySnapshot) {
+      const historyResponse =
+        await putGitHubJson(
+          historyPath,
+          sessionData,
+          `Save session snapshot from ${alias} at ${sessionData.timestamp}`
+        );
+
+      historySummary =
+        buildSessionSummary(
+          sessionData,
+          historyPath,
+          historyResponse.content.sha,
+          "history"
+        );
+    }
+
     const withoutDuplicatePath =
       currentIndex.sessions.filter(
         (session) =>
-          session.path !== historyPath
+          session.path !== historyPath &&
+          session.path !== latestPath
       );
-    const retained = applyRetention([
-      historySummary,
-      ...withoutDuplicatePath
-    ]);
+    const retained = applyRetention(
+      [
+        latestSummary,
+        ...(historySummary
+          ? [historySummary]
+          : []),
+        ...withoutDuplicatePath
+      ]
+    );
 
     await saveSessionIndex({
       sessions: retained.kept
@@ -776,9 +906,6 @@ async function saveSessionToGitHub() {
       }
     }
 
-    await chrome.storage.local.set({
-      lastSessionSignature: signature
-    });
     await chrome.storage.sync.set({
       lastSyncTime:
         new Date().toISOString(),
@@ -791,8 +918,17 @@ async function saveSessionToGitHub() {
     );
     return {
       success: true,
-      filePath: historyPath,
-      latestPath
+      filePath: shouldCreateDailySnapshot
+        ? historyPath
+        : latestPath,
+      latestPath,
+      snapshotCreated:
+        shouldCreateDailySnapshot,
+      snapshotReason: forceSnapshot
+        ? "manual"
+        : shouldCreateDailySnapshot
+          ? "daily"
+          : "none"
     };
   } catch (error) {
     console.error(

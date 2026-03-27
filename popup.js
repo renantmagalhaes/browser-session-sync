@@ -90,6 +90,10 @@ function getSessionProfileKey(session) {
   );
 }
 
+function getSessionKind(session) {
+  return session.kind || "history";
+}
+
 async function getCurrentProfileKey() {
   const syncSettings =
     await chrome.storage.sync.get([
@@ -407,7 +411,7 @@ async function loadSessions() {
 
     if (allSessions.length === 0) {
       sessionsList.innerHTML =
-        '<p class="empty">No sessions saved yet. Click "Sync Now" to save your current session.</p>';
+        '<p class="empty">No sessions saved yet. Click "Update Current" to sync your latest state or "Save Snapshot" to create history.</p>';
       return;
     }
 
@@ -480,8 +484,15 @@ function createSessionElement(session) {
   const titleEl =
     document.createElement("div");
   titleEl.className = "session-title";
+  const kind =
+    getSessionKind(session);
+  const kindLabel =
+    kind === "latest"
+      ? "Current"
+      : "Snapshot";
   titleEl.innerHTML = `
     <strong>${escapeHtml(getSessionAlias(session))}</strong>
+    <span class="session-kind ${kind === "latest" ? "current" : "snapshot"}">${escapeHtml(kindLabel)}</span>
     <span class="session-date">${date.toLocaleString()}</span>
   `;
 
@@ -590,7 +601,8 @@ async function syncNow() {
   const btn =
     document.getElementById("syncNow");
   btn.disabled = true;
-  btn.textContent = "⏳ Syncing...";
+  btn.textContent =
+    "⏳ Updating...";
 
   try {
     const response =
@@ -611,18 +623,19 @@ async function syncNow() {
       }
       btn.textContent = response.skipped
         ? "🟰 No Changes"
-        : "✅ Synced!";
+        : "✅ Updated";
       setTimeout(() => {
         if (btn.disabled) {
           btn.disabled = false;
           btn.textContent =
-            "💾 Sync Now";
+            "🔄 Update Current";
         }
       }, 2000);
     } else {
       alert(`Error: ${response.error}`);
       btn.disabled = false;
-      btn.textContent = "💾 Sync Now";
+      btn.textContent =
+        "🔄 Update Current";
     }
   } catch (error) {
     console.error(
@@ -631,7 +644,59 @@ async function syncNow() {
     );
     alert(`Error: ${error.message}`);
     btn.disabled = false;
-    btn.textContent = "💾 Sync Now";
+    btn.textContent =
+      "🔄 Update Current";
+  }
+}
+
+async function saveSnapshot() {
+  const btn =
+    document.getElementById(
+      "saveSnapshot"
+    );
+  btn.disabled = true;
+  btn.textContent =
+    "⏳ Saving...";
+
+  try {
+    const response =
+      await sendMessageWithRetry({
+        action: "saveSnapshot"
+      });
+
+    if (!response) {
+      throw new Error(
+        "No response from background service worker"
+      );
+    }
+
+    if (response.success) {
+      await updateStatus();
+      await loadSessions();
+      btn.textContent =
+        response.snapshotCreated
+          ? "✅ Saved"
+          : "🟰 Unchanged";
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent =
+          "📸 Save Snapshot";
+      }, 2000);
+    } else {
+      alert(`Error: ${response.error}`);
+      btn.disabled = false;
+      btn.textContent =
+        "📸 Save Snapshot";
+    }
+  } catch (error) {
+    console.error(
+      "Error saving snapshot:",
+      error
+    );
+    alert(`Error: ${error.message}`);
+    btn.disabled = false;
+    btn.textContent =
+      "📸 Save Snapshot";
   }
 }
 
@@ -664,6 +729,12 @@ function openSettings() {
 document
   .getElementById("syncNow")
   .addEventListener("click", syncNow);
+document
+  .getElementById("saveSnapshot")
+  .addEventListener(
+    "click",
+    saveSnapshot
+  );
 document
   .getElementById("refreshList")
   .addEventListener(

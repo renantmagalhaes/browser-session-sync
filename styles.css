@@ -162,6 +162,24 @@ body {
   border-color: var(--border-color);
 }
 
+.session-kind {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background-color: rgba(3, 102, 214, 0.12);
+  color: var(--primary-color);
+}
+
+.session-kind.snapshot {
+  background-color: rgba(40, 167, 69, 0.12);
+  color: var(--success-color);
+}
+
 .btn-restore {
   padding: 8px 12px;
   font-size: 12px;
