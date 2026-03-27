@@ -5,6 +5,17 @@
 const FORM_ID = "settingsForm";
 const MESSAGE_ID = "message";
 
+async function applyStoredTheme() {
+  const { themePreference } =
+    await chrome.storage.sync.get(
+      "themePreference"
+    );
+  document.documentElement.setAttribute(
+    "data-theme",
+    themePreference || "dark"
+  );
+}
+
 function slugifyProfileKey(value) {
   return (value || "")
     .toLowerCase()
@@ -412,5 +423,8 @@ document
 // Load settings on page load
 document.addEventListener(
   "DOMContentLoaded",
-  loadSettings
+  async () => {
+    await applyStoredTheme();
+    await loadSettings();
+  }
 );

@@ -5,6 +5,53 @@
 let allSessions = [];
 let selectedProfileKey = "__all__";
 let currentProfileKey = null;
+let currentTheme = "dark";
+
+function applyTheme(theme) {
+  currentTheme = theme === "light"
+    ? "light"
+    : "dark";
+  document.documentElement.setAttribute(
+    "data-theme",
+    currentTheme
+  );
+  const toggle =
+    document.getElementById(
+      "themeToggle"
+    );
+
+  if (toggle) {
+    toggle.textContent =
+      currentTheme === "dark"
+        ? "☀️"
+        : "🌙";
+    toggle.title =
+      currentTheme === "dark"
+        ? "Switch to light theme"
+        : "Switch to dark theme";
+  }
+}
+
+async function loadThemePreference() {
+  const { themePreference } =
+    await chrome.storage.sync.get(
+      "themePreference"
+    );
+  applyTheme(
+    themePreference || "dark"
+  );
+}
+
+async function toggleTheme() {
+  const nextTheme =
+    currentTheme === "dark"
+      ? "light"
+      : "dark";
+  applyTheme(nextTheme);
+  await chrome.storage.sync.set({
+    themePreference: nextTheme
+  });
+}
 
 function getDisplayHostname(url) {
   if (!url) {
@@ -762,9 +809,16 @@ document
       applyFilters();
     }
   );
+document
+  .getElementById("themeToggle")
+  .addEventListener(
+    "click",
+    toggleTheme
+  );
 
 // Initialize on popup open
 (async () => {
+  await loadThemePreference();
   currentProfileKey =
     await getCurrentProfileKey();
   selectedProfileKey =
