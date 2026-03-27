@@ -23,12 +23,21 @@ Get your Browser Session Sync extension running in 5 minutes!
 
 ```bash
 1. Visit https://github.com/settings/tokens
-2. Click "Generate new token"
-3. Name: "Browser Session Sync"
-4. Scopes: Select ONLY "repo" checkbox
-5. Click "Generate token"
-6. Copy the token (save it somewhere - you won't see it again!)
+2. Choose "Fine-grained personal access tokens"
+3. Click "Generate new token"
+4. Name: "Browser Session Sync"
+5. Repository access: select the repository you created
+6. Permissions:
+   - Metadata: Read-only
+   - Contents / Code: Read and write
+7. Click "Generate token"
+8. Copy the token (save it somewhere - you won't see it again!)
 ```
+
+Required permissions:
+
+- Read access to metadata
+- Read and Write access to code
 
 ### Step 3: Load Extension in Chrome (1 minute)
 
@@ -47,7 +56,8 @@ Get your Browser Session Sync extension running in 5 minutes!
    - **GitHub Username**: your-username
    - **Repository Name**: my-sessions-repo
    - **Personal Access Token**: (paste token from Step 2)
-   - **Profile Name**: My Laptop (optional)
+   - **Profile Name**: My Laptop
+   - **Profile Folder**: my-laptop
 3. Click "Test Connection" to verify
 4. Click "Save Settings"
 
@@ -55,58 +65,44 @@ Get your Browser Session Sync extension running in 5 minutes!
 
 ## 💾 Using the Extension
 
-### Save Your Current Session
+### Update Your Current Session
 
 - Click extension icon
-- Click "💾 Sync Now"
-- Status updates when done
+- Click "Update Current"
+- This updates `latest.json` for the current profile
+
+### Save a Snapshot
+
+- Click extension icon
+- Click "Save Snapshot"
+- Use this when you want an explicit checkpoint
 
 ### Restore a Previous Session
 
 - Click extension icon
 - Find session in list
-- Click "📂 Restore"
+- Click "Restore"
 - New window opens with all tabs
 
 ### Find Sessions
 
-- Use search box to filter by:
-  - Profile name (e.g., "Work")
-  - Website (e.g., "github.com")
-  - Page title (e.g., "GitHub")
+- Use the profile filter to switch between the current profile and `All Profiles`
+- Use search to filter by:
+  - Profile name
+  - Website
+  - Page title
 
-## ⚙️ Optional Settings
+## ⚙️ Recommended Settings
 
-**Auto-sync Interval** (Default: 30 minutes)
-
-- Set to desired minutes
-- Set to 0 to disable auto-sync
-- Recommend: 30 minutes
-
-**Exclude Local Tabs**
-
-- Check to ignore localhost and file:// URLs
-- Useful if you have many local projects
-
-**Profile Name**
-
-- Give this browser a nickname
-- Useful when syncing across multiple browsers
-
-## 🔍 Monitor Sync Status
-
-In the popup, you'll see:
-
-- ✅ **Ready to sync** - Everything working
-- ⚠️ **Error message** - Check connection/credentials
-- 📡 **No sync yet** - First-time setup
-- **Last sync timestamp** - When it last ran
+- **Auto-sync Interval**: `30` minutes is a good default
+- **Profile Name**: human-readable label, for example `Work Laptop`
+- **Profile Folder**: stable GitHub folder name, for example `work-laptop`
 
 ## 🆘 Troubleshooting
 
 ### "401 Unauthorized" Error
 
-→ Check your GitHub token is correct and hasn't expired
+→ Check your GitHub token is correct and still has the required permissions
 
 ### "404 Not Found" Error
 
@@ -128,42 +124,18 @@ In the popup, you'll see:
 
 - **Full Documentation**: Read [README.md](README.md)
 - **Troubleshooting**: [README.md - Troubleshooting section](README.md#troubleshooting)
-- **Security**: [README.md - Security Considerations](README.md#security-considerations)
-- **API Details**: [README.md - API Usage](README.md#api-usage)
-
-## 💡 Pro Tips
-
-1. **Backup Multiple Browsers**: Install on work and personal browsers - each gets its own folder
-2. **Use Descriptive Names**: Set profile names like "Work Laptop", "Home Desktop" to tell them apart
-3. **Regular Syncs**: Use 15-30 minute intervals to keep recent sessions backed up
-4. **Test First**: Run "Test Connection" after setup to verify everything works
-5. **Token Security**: Treat your GitHub token like a password - regenerate if compromised
+- **Architecture and behavior**: [README.md](README.md#how-it-works)
 
 ## 🔐 Security Checklist
 
 - [ ] Created PRIVATE repository
-- [ ] Set token to "repo" scope only
+- [ ] Used a Fine-grained personal access token
+- [ ] Granted Read access to metadata
+- [ ] Granted Read and Write access to code
 - [ ] Tested connection successfully
 - [ ] Token is not shared anywhere
-- [ ] Browser profile name is set
-
-## ❓ FAQ
-
-**Q: Is my data visible to GitHub?**
-A: No. Your session data is stored in your private repository, encrypted with Base64. Only you can access it.
-
-**Q: What if I forget my token?**
-A: Generate a new one in GitHub Settings, update the extension settings.
-
-**Q: Can I sync across browsers?**
-A: Yes! Each browser gets a unique ID. Restore any session on any browser.
-
-**Q: Does it work offline?**
-A: No, syncing requires internet connection to GitHub.
-
-**Q: How many sessions can I store?**
-A: As many as fit in your GitHub repo (typically hundreds of sessions).
+- [ ] Browser profile name and folder are set
 
 ---
 
-**Ready to start?** → Click the extension icon and hit "💾 Sync Now" to save your first session!
+**Ready to start?** → Click the extension icon and hit "Update Current" to sync your first session.
