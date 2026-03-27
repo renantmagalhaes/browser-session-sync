@@ -67,16 +67,6 @@
       </div>
 
       <div class="search-section">
-        <div class="filter-row">
-          <select
-            id="profileFilter"
-            class="profile-filter"
-          >
-            <option value="__all__">
-              All Profiles
-            </option>
-          </select>
-        </div>
         <input
           type="text"
           id="searchInput"
@@ -86,7 +76,17 @@
       </div>
 
       <div class="sessions-section">
-        <h2>Saved Sessions</h2>
+        <div class="sessions-heading">
+          <h2>Saved Sessions</h2>
+          <select
+            id="profileFilter"
+            class="profile-filter"
+          >
+            <option value="__all__">
+              All Profiles
+            </option>
+          </select>
+        </div>
         <div
           id="sessionsList"
           class="sessions-list"
