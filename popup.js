@@ -16,6 +16,68 @@ function getDisplayHostname(url) {
   }
 }
 
+function getSessionTimestamp(session) {
+  return (
+    session.timestamp ||
+    session.data?.timestamp ||
+    null
+  );
+}
+
+function getSessionAlias(session) {
+  return (
+    session.browserAlias ||
+    session.data?.browserAlias ||
+    "Unknown Browser"
+  );
+}
+
+function getSessionWindowCount(session) {
+  if (
+    typeof session.windowCount ===
+    "number"
+  ) {
+    return session.windowCount;
+  }
+
+  return (
+    session.data?.windows?.length || 0
+  );
+}
+
+function getSessionTabCount(session) {
+  if (
+    typeof session.tabCount === "number"
+  ) {
+    return session.tabCount;
+  }
+
+  return (
+    session.data?.windows?.reduce(
+      (sum, windowData) =>
+        sum + windowData.tabs.length,
+      0
+    ) || 0
+  );
+}
+
+function getPreviewTabs(session) {
+  if (
+    Array.isArray(session.previewTabs) &&
+    session.previewTabs.length > 0
+  ) {
+    return session.previewTabs;
+  }
+
+  return (
+    session.data?.windows
+      ?.flatMap(
+        (windowData) => windowData.tabs
+      )
+      .slice(0, 3) || []
+  );
+}
+
 /**
  * Send message with retry logic for service worker delays
  */
@@ -234,8 +296,8 @@ function displaySessions(
     ...sessionsToDisplay
   ].sort((a, b) => {
     return (
-      new Date(b.data.timestamp) -
-      new Date(a.data.timestamp)
+      new Date(getSessionTimestamp(b)) -
+      new Date(getSessionTimestamp(a))
     );
   });
 
@@ -255,15 +317,12 @@ function createSessionElement(session) {
   div.className = "session-item";
 
   const date = new Date(
-    session.data.timestamp
+    getSessionTimestamp(session)
   );
   const tabCount =
-    session.data.windows.reduce(
-      (sum, w) => sum + w.tabs.length,
-      0
-    );
+    getSessionTabCount(session);
   const windowCount =
-    session.data.windows.length;
+    getSessionWindowCount(session);
 
   const headerDiv =
     document.createElement("div");
@@ -274,7 +333,7 @@ function createSessionElement(session) {
     document.createElement("div");
   titleEl.className = "session-title";
   titleEl.innerHTML = `
-    <strong>${escapeHtml(session.data.browserAlias)}</strong>
+    <strong>${escapeHtml(getSessionAlias(session))}</strong>
     <span class="session-date">${date.toLocaleString()}</span>
   `;
 
@@ -293,9 +352,7 @@ function createSessionElement(session) {
     "tabs-preview";
 
   const previewTabs =
-    session.data.windows
-      .flatMap((w) => w.tabs)
-      .slice(0, 3);
+    getPreviewTabs(session);
 
   for (const tab of previewTabs) {
     const tabEl =
@@ -401,8 +458,12 @@ async function syncNow() {
 
     if (response.success) {
       await updateStatus();
-      await loadSessions();
-      btn.textContent = "✅ Synced!";
+      if (!response.skipped) {
+        await loadSessions();
+      }
+      btn.textContent = response.skipped
+        ? "🟰 No Changes"
+        : "✅ Synced!";
       setTimeout(() => {
         if (btn.disabled) {
           btn.disabled = false;
@@ -438,36 +499,34 @@ function filterSessions(searchTerm) {
   const term = searchTerm.toLowerCase();
   const filtered = allSessions.filter(
     (session) => {
-      const { data } = session;
-
-      // Search in browser alias
       if (
-        data.browserAlias
-          .toLowerCase()
-          .includes(term)
+        session.searchText &&
+        session.searchText.includes(term)
       ) {
         return true;
       }
 
-      // Search in tab titles and URLs
-      for (const window of data.windows) {
-        for (const tab of window.tabs) {
-          if (
-            (tab.title &&
-              tab.title
-                .toLowerCase()
-                .includes(term)) ||
-            (tab.url &&
-              tab.url
-                .toLowerCase()
-                .includes(term))
-          ) {
-            return true;
-          }
-        }
+      const alias =
+        getSessionAlias(session).toLowerCase();
+
+      if (alias.includes(term)) {
+        return true;
       }
 
-      return false;
+      const previewTabs =
+        getPreviewTabs(session);
+
+      return previewTabs.some(
+        (tab) =>
+          (tab.title &&
+            tab.title
+              .toLowerCase()
+              .includes(term)) ||
+          (tab.url &&
+            tab.url
+              .toLowerCase()
+              .includes(term))
+      );
     }
   );
 
