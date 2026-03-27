@@ -182,6 +182,37 @@ async function getRepoUrl() {
   return `https://api.github.com/repos/${githubUsername}/${githubRepo}`;
 }
 
+function slugifyProfileKey(value) {
+  return (value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+async function getProfileStorageKey() {
+  const clientId =
+    await initializeClientId();
+  const { profileKey, profileName } =
+    await chrome.storage.sync.get([
+      "profileKey",
+      "profileName"
+    ]);
+  const normalizedKey =
+    slugifyProfileKey(profileKey) ||
+    slugifyProfileKey(profileName) ||
+    clientId;
+
+  if (normalizedKey !== profileKey) {
+    await chrome.storage.sync.set({
+      profileKey: normalizedKey
+    });
+  }
+
+  return normalizedKey;
+}
+
 function encodeBase64Utf8(text) {
   const bytes = new TextEncoder().encode(
     text
@@ -383,6 +414,7 @@ function buildSearchText(
 ) {
   return [
     sessionData.browserAlias,
+    sessionData.profileKey,
     sessionData.clientId,
     ...tabs.flatMap((tab) => [
       tab.title || "",
@@ -408,6 +440,8 @@ function buildSessionSummary(
     timestamp: sessionData.timestamp,
     browserAlias:
       sessionData.browserAlias,
+    profileKey:
+      sessionData.profileKey || "",
     clientId: sessionData.clientId,
     windowCount:
       sessionData.windows.length,
@@ -628,6 +662,8 @@ async function saveSessionToGitHub() {
   try {
     const clientId =
       await initializeClientId();
+    const profileStorageKey =
+      await getProfileStorageKey();
     const { profileName } =
       await chrome.storage.sync.get(
         "profileName"
@@ -643,6 +679,7 @@ async function saveSessionToGitHub() {
       timestamp:
         new Date().toISOString(),
       browserAlias: alias,
+      profileKey: profileStorageKey,
       clientId,
       windows: windows.map((windowData) => ({
         id: windowData.id,
@@ -680,8 +717,8 @@ async function saveSessionToGitHub() {
       };
     }
 
-    const latestPath = `${SESSIONS_DIR}/${clientId}/latest.json`;
-    const historyPath = `${SESSIONS_DIR}/${clientId}/history/session-${Date.now()}.json`;
+    const latestPath = `${SESSIONS_DIR}/${profileStorageKey}/latest.json`;
+    const historyPath = `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}.json`;
     const latestFile =
       await fetchGitHubJson(latestPath);
 

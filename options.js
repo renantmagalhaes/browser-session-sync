@@ -5,6 +5,15 @@
 const FORM_ID = "settingsForm";
 const MESSAGE_ID = "message";
 
+function slugifyProfileKey(value) {
+  return (value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
 /**
  * Load saved settings into form
  */
@@ -15,6 +24,7 @@ async function loadSettings() {
       "githubRepo",
       "githubToken",
       "profileName",
+      "profileKey",
       "syncInterval",
       "excludeLocalTabs",
       "lastSyncTime"
@@ -46,6 +56,18 @@ async function loadSettings() {
       "profileName"
     ).value = settings.profileName;
   }
+  const derivedProfileKey =
+    settings.profileKey ||
+    slugifyProfileKey(
+      settings.profileName
+    ) ||
+    local.clientId ||
+    "";
+  if (derivedProfileKey) {
+    document.getElementById(
+      "profileKey"
+    ).value = derivedProfileKey;
+  }
   if (
     settings.syncInterval !== undefined
   ) {
@@ -63,6 +85,12 @@ async function loadSettings() {
     document.getElementById(
       "clientId"
     ).value = local.clientId;
+  }
+  if (derivedProfileKey) {
+    document.getElementById(
+      "profileKeyDisplay"
+    ).textContent =
+      `Profile folder: ${derivedProfileKey}`;
   }
 
   // Display last sync time
@@ -117,6 +145,14 @@ async function saveSettings() {
     profileName: document
       .getElementById("profileName")
       .value.trim(),
+    profileKey: slugifyProfileKey(
+      document.getElementById(
+        "profileKey"
+      ).value.trim() ||
+        document.getElementById(
+          "profileName"
+        ).value.trim()
+    ),
     syncInterval: parseInt(
       document.getElementById(
         "syncInterval"
@@ -128,6 +164,14 @@ async function saveSettings() {
         "excludeLocalTabs"
       ).checked
   };
+
+  if (!settings.profileKey) {
+    showMessage(
+      "Please enter a profile name or profile folder",
+      "error"
+    );
+    return false;
+  }
 
   try {
     // Save to sync storage
@@ -303,6 +347,29 @@ function togglePasswordVisibility() {
   }
 }
 
+function syncProfileKeyFromName() {
+  const profileNameInput =
+    document.getElementById(
+      "profileName"
+    );
+  const profileKeyInput =
+    document.getElementById(
+      "profileKey"
+    );
+
+  if (
+    profileKeyInput.dataset.touched ===
+    "true"
+  ) {
+    return;
+  }
+
+  profileKeyInput.value =
+    slugifyProfileKey(
+      profileNameInput.value
+    );
+}
+
 // Event listeners
 document
   .getElementById(FORM_ID)
@@ -324,6 +391,23 @@ document
     "change",
     togglePasswordVisibility
   );
+
+document
+  .getElementById("profileName")
+  .addEventListener(
+    "input",
+    syncProfileKeyFromName
+  );
+
+document
+  .getElementById("profileKey")
+  .addEventListener("input", (e) => {
+    e.target.dataset.touched =
+      e.target.value.trim() ? "true" : "false";
+    e.target.value = slugifyProfileKey(
+      e.target.value
+    );
+  });
 
 // Load settings on page load
 document.addEventListener(

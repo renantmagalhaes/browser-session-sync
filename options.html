@@ -108,6 +108,23 @@
           </div>
 
           <div class="form-group">
+            <label for="profileKey"
+              >Profile Folder:</label
+            >
+            <input
+              type="text"
+              id="profileKey"
+              placeholder="e.g., work-laptop"
+            />
+            <small
+              >Used in GitHub folder paths like
+              <code>sessions/work-laptop/</code>.
+              Use a stable, readable name for
+              each profile.</small
+            >
+          </div>
+
+          <div class="form-group">
             <label for="clientId"
               >Client ID
               (Auto-generated):</label
@@ -170,6 +187,7 @@
             class="status-display"
           >
             <p id="lastSyncDisplay"></p>
+            <p id="profileKeyDisplay"></p>
             <p id="clientIdDisplay"></p>
           </div>
         </fieldset>
@@ -214,13 +232,13 @@
             structure:
           </p>
           <code
-            >sessions/{clientId}/session-{timestamp}.json</code
+            >sessions/{profileFolder}/history/session-{timestamp}.json</code
           >
           <p>
-            Each file contains all open
-            windows and tabs from your
-            browser session in JSON
-            format.
+            Each profile also keeps a
+            <code>latest.json</code> file,
+            while <code>clientId</code>
+            remains internal metadata.
           </p>
         </div>
       </details>
