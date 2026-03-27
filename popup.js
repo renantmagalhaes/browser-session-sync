@@ -551,7 +551,18 @@ function createSessionElement(session) {
   headerDiv.appendChild(titleEl);
   headerDiv.appendChild(statsEl);
 
-  // Tabs preview
+  const detailsEl =
+    document.createElement("details");
+  detailsEl.className =
+    "session-details";
+
+  const summaryEl =
+    document.createElement("summary");
+  summaryEl.className =
+    "session-summary";
+  summaryEl.textContent =
+    "Session details";
+
   const tabsContainer =
     document.createElement("div");
   tabsContainer.className =
@@ -591,14 +602,16 @@ function createSessionElement(session) {
     document.createElement("button");
   restoreBtn.className =
     "btn btn-restore";
-  restoreBtn.textContent = "📂 Restore";
+  restoreBtn.textContent = "Restore";
   restoreBtn.onclick = () =>
     restoreSession(session.path);
 
+  detailsEl.appendChild(summaryEl);
+  detailsEl.appendChild(tabsContainer);
   actionsDiv.appendChild(restoreBtn);
 
   div.appendChild(headerDiv);
-  div.appendChild(tabsContainer);
+  div.appendChild(detailsEl);
   div.appendChild(actionsDiv);
 
   return div;

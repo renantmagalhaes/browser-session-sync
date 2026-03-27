@@ -343,7 +343,7 @@ input::placeholder {
 
 .session-item {
   margin-bottom: 14px;
-  padding: 16px;
+  padding: 14px;
   border: 1px solid var(--border-color);
   border-radius: 18px;
   background: var(--surface);
@@ -363,8 +363,8 @@ input::placeholder {
 .session-header {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-bottom: 12px;
+  gap: 4px;
+  margin-bottom: 10px;
 }
 
 .session-title {
@@ -400,18 +400,51 @@ input::placeholder {
 
 .session-date,
 .session-stats {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
+}
+
+.session-details {
+  margin-bottom: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--surface-soft);
+  overflow: hidden;
+}
+
+.session-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.session-summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-summary::after {
+  content: "+";
+  float: right;
+  color: var(--text-tertiary);
+  font-size: 14px;
+}
+
+.session-details[open] .session-summary::after {
+  content: "-";
 }
 
 .tabs-preview {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 12px;
-  padding: 12px;
+  padding: 0 12px 12px;
   border: 1px solid var(--border-color);
-  border-radius: 14px;
+  border-radius: 0 0 14px 14px;
+  border-top: none;
   background: var(--surface-soft);
 }
 
@@ -446,7 +479,16 @@ input::placeholder {
 
 .session-actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
+}
+
+.btn-restore {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 7px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 10px;
 }
 
 .loading,
