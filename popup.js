@@ -3,6 +3,8 @@
  */
 
 let allSessions = [];
+let selectedProfileKey = "__all__";
+let currentProfileKey = null;
 
 function getDisplayHostname(url) {
   if (!url) {
@@ -76,6 +78,151 @@ function getPreviewTabs(session) {
       )
       .slice(0, 3) || []
   );
+}
+
+function getSessionProfileKey(session) {
+  return (
+    session.profileKey ||
+    session.data?.profileKey ||
+    session.clientId ||
+    session.data?.clientId ||
+    "unknown-profile"
+  );
+}
+
+async function getCurrentProfileKey() {
+  const syncSettings =
+    await chrome.storage.sync.get([
+      "profileKey",
+      "profileName"
+    ]);
+  const localSettings =
+    await chrome.storage.local.get([
+      "clientId"
+    ]);
+
+  return (
+    syncSettings.profileKey ||
+    (syncSettings.profileName || "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") ||
+    localSettings.clientId ||
+    "__all__"
+  );
+}
+
+function populateProfileFilter() {
+  const filterEl =
+    document.getElementById(
+      "profileFilter"
+    );
+  const profileMap = new Map();
+
+  for (const session of allSessions) {
+    const key =
+      getSessionProfileKey(session);
+
+    if (!profileMap.has(key)) {
+      profileMap.set(
+        key,
+        getSessionAlias(session)
+      );
+    }
+  }
+
+  const sortedProfiles = Array.from(
+    profileMap.entries()
+  ).sort((a, b) =>
+    a[1].localeCompare(b[1])
+  );
+
+  filterEl.innerHTML = "";
+
+  const allOption =
+    document.createElement("option");
+  allOption.value = "__all__";
+  allOption.textContent =
+    "All Profiles";
+  filterEl.appendChild(allOption);
+
+  for (const [key, label] of sortedProfiles) {
+    const option =
+      document.createElement("option");
+    option.value = key;
+    option.textContent = `${label} (${key})`;
+    filterEl.appendChild(option);
+  }
+
+  if (
+    currentProfileKey &&
+    profileMap.has(currentProfileKey)
+  ) {
+    selectedProfileKey =
+      currentProfileKey;
+  } else if (
+    selectedProfileKey !== "__all__" &&
+    profileMap.has(selectedProfileKey)
+  ) {
+    // Keep the current selection.
+  } else {
+    selectedProfileKey = "__all__";
+  }
+
+  filterEl.value = selectedProfileKey;
+}
+
+function getFilteredSessions() {
+  const searchTerm = document
+    .getElementById("searchInput")
+    .value.trim()
+    .toLowerCase();
+
+  return allSessions.filter((session) => {
+    const inProfileScope =
+      selectedProfileKey === "__all__" ||
+      getSessionProfileKey(session) ===
+        selectedProfileKey;
+
+    if (!inProfileScope) {
+      return false;
+    }
+
+    if (!searchTerm) {
+      return true;
+    }
+
+    if (
+      session.searchText &&
+      session.searchText.includes(searchTerm)
+    ) {
+      return true;
+    }
+
+    const alias =
+      getSessionAlias(session).toLowerCase();
+
+    if (alias.includes(searchTerm)) {
+      return true;
+    }
+
+    return getPreviewTabs(session).some(
+      (tab) =>
+        (tab.title &&
+          tab.title
+            .toLowerCase()
+            .includes(searchTerm)) ||
+        (tab.url &&
+          tab.url
+            .toLowerCase()
+            .includes(searchTerm))
+    );
+  });
+}
+
+function applyFilters() {
+  displaySessions(getFilteredSessions());
 }
 
 /**
@@ -256,6 +403,7 @@ async function loadSessions() {
 
     allSessions =
       response.sessions || [];
+    populateProfileFilter();
 
     if (allSessions.length === 0) {
       sessionsList.innerHTML =
@@ -263,7 +411,7 @@ async function loadSessions() {
       return;
     }
 
-    displaySessions(allSessions);
+    applyFilters();
   } catch (error) {
     console.error(
       "Error loading sessions:",
@@ -491,46 +639,8 @@ async function syncNow() {
  * Search/filter sessions
  */
 function filterSessions(searchTerm) {
-  if (!searchTerm.trim()) {
-    displaySessions(allSessions);
-    return;
-  }
-
-  const term = searchTerm.toLowerCase();
-  const filtered = allSessions.filter(
-    (session) => {
-      if (
-        session.searchText &&
-        session.searchText.includes(term)
-      ) {
-        return true;
-      }
-
-      const alias =
-        getSessionAlias(session).toLowerCase();
-
-      if (alias.includes(term)) {
-        return true;
-      }
-
-      const previewTabs =
-        getPreviewTabs(session);
-
-      return previewTabs.some(
-        (tab) =>
-          (tab.title &&
-            tab.title
-              .toLowerCase()
-              .includes(term)) ||
-          (tab.url &&
-            tab.url
-              .toLowerCase()
-              .includes(term))
-      );
-    }
-  );
-
-  displaySessions(filtered);
+  void searchTerm;
+  applyFilters();
 }
 
 /**
@@ -571,7 +681,23 @@ document
   .addEventListener("input", (e) => {
     filterSessions(e.target.value);
   });
+document
+  .getElementById("profileFilter")
+  .addEventListener(
+    "change",
+    (e) => {
+      selectedProfileKey =
+        e.target.value;
+      applyFilters();
+    }
+  );
 
 // Initialize on popup open
-updateStatus();
-loadSessions();
+(async () => {
+  currentProfileKey =
+    await getCurrentProfileKey();
+  selectedProfileKey =
+    currentProfileKey || "__all__";
+  updateStatus();
+  loadSessions();
+})();
