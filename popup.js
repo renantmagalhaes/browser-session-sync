@@ -6,6 +6,7 @@ let allSessions = [];
 let selectedProfileKey = "__all__";
 let currentProfileKey = null;
 let currentTheme = "dark";
+const sessionDetailsCache = new Map();
 
 function applyTheme(theme) {
   currentTheme = theme === "light"
@@ -124,6 +125,14 @@ function getPreviewTabs(session) {
         (windowData) => windowData.tabs
       )
       .slice(0, 3) || []
+  );
+}
+
+function getAllTabsFromSessionData(data) {
+  return (
+    data?.windows?.flatMap(
+      (windowData) => windowData.tabs || []
+    ) || []
   );
 }
 
@@ -579,6 +588,11 @@ function createSessionElement(session) {
 
   const previewTabs =
     getPreviewTabs(session);
+  const remainingCount =
+    Math.max(
+      tabCount - previewTabs.length,
+      0
+    );
 
   for (const tab of previewTabs) {
     const tabEl =
@@ -592,13 +606,144 @@ function createSessionElement(session) {
     tabsContainer.appendChild(tabEl);
   }
 
-  if (tabCount > 3) {
-    const moreEl =
+  if (remainingCount > 0) {
+    const extraSection =
       document.createElement("div");
-    moreEl.className =
-      "tab-preview more";
-    moreEl.textContent = `+${tabCount - 3} more`;
-    tabsContainer.appendChild(moreEl);
+    extraSection.className =
+      "tabs-more-section";
+
+    const moreBtn =
+      document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className =
+      "tabs-more-toggle";
+    moreBtn.textContent = `Show ${remainingCount} more tab${remainingCount === 1 ? "" : "s"}`;
+
+    const extraTabsContainer =
+      document.createElement("div");
+    extraTabsContainer.className =
+      "extra-tabs";
+    extraTabsContainer.hidden = true;
+
+    moreBtn.onclick = async () => {
+      const isOpen =
+        !extraTabsContainer.hidden;
+
+      if (isOpen) {
+        extraTabsContainer.hidden = true;
+        moreBtn.textContent = `Show ${remainingCount} more tab${remainingCount === 1 ? "" : "s"}`;
+        return;
+      }
+
+      if (
+        !extraTabsContainer.dataset.loaded
+      ) {
+        moreBtn.disabled = true;
+        moreBtn.textContent =
+          "Loading tabs...";
+
+        try {
+          let fullSession =
+            sessionDetailsCache.get(
+              session.path
+            );
+
+          if (!fullSession) {
+            const response =
+              await sendMessageWithRetry({
+                action:
+                  "getSessionDetails",
+                sessionPath:
+                  session.path
+              });
+
+            if (
+              !response ||
+              !response.success
+            ) {
+              throw new Error(
+                response?.error ||
+                  "Failed to load session details"
+              );
+            }
+
+            fullSession =
+              response.session;
+            sessionDetailsCache.set(
+              session.path,
+              fullSession
+            );
+          }
+
+          const extraTabs =
+            getAllTabsFromSessionData(
+              fullSession
+            ).slice(
+              previewTabs.length
+            );
+
+          if (extraTabs.length === 0) {
+            const emptyState =
+              document.createElement(
+                "div"
+              );
+            emptyState.className =
+              "extra-tabs-empty";
+            emptyState.textContent =
+              "No additional tabs to show.";
+            extraTabsContainer.appendChild(
+              emptyState
+            );
+          } else {
+            for (const tab of extraTabs) {
+              const extraTabEl =
+                document.createElement(
+                  "div"
+                );
+              extraTabEl.className =
+                "tab-preview extra";
+              extraTabEl.title =
+                tab.url;
+              extraTabEl.innerHTML = `
+                <span class="tab-title">${escapeHtml(tab.title || "Untitled")}</span>
+                <span class="tab-url">${escapeHtml(getDisplayHostname(tab.url))}</span>
+              `;
+              extraTabsContainer.appendChild(
+                extraTabEl
+              );
+            }
+          }
+
+          extraTabsContainer.dataset.loaded =
+            "true";
+        } catch (error) {
+          const errorEl =
+            document.createElement("div");
+          errorEl.className =
+            "extra-tabs-error";
+          errorEl.textContent =
+            error.message ||
+            "Unable to load additional tabs.";
+          extraTabsContainer.replaceChildren(
+            errorEl
+          );
+          extraTabsContainer.dataset.loaded =
+            "true";
+        } finally {
+          moreBtn.disabled = false;
+        }
+      }
+
+      extraTabsContainer.hidden = false;
+      moreBtn.textContent =
+        "Hide extra tabs";
+    };
+
+    extraSection.appendChild(moreBtn);
+    extraSection.appendChild(
+      extraTabsContainer
+    );
+    tabsContainer.appendChild(extraSection);
   }
 
   detailsEl.appendChild(summaryEl);

@@ -482,9 +482,68 @@ input::placeholder {
   min-width: 0;
 }
 
-.tab-preview.more {
-  font-style: italic;
-  color: var(--text-tertiary);
+.tabs-more-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.tabs-more-toggle {
+  align-self: flex-start;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.tabs-more-toggle:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--text-primary);
+}
+
+.tabs-more-toggle:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.extra-tabs {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px dashed var(--border-color);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.extra-tabs[hidden] {
+  display: none;
+}
+
+.tab-preview.extra {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-strong);
+}
+
+.extra-tabs-empty,
+.extra-tabs-error {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.extra-tabs-error {
+  color: var(--error-color);
 }
 
 .tab-title,

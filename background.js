@@ -47,6 +47,14 @@ async function handleMessage(request) {
         request.sessionPath
       );
 
+    case "getSessionDetails":
+      console.log(
+        "Processing getSessionDetails"
+      );
+      return await getSessionDetails(
+        request.sessionPath
+      );
+
     case "getStatus": {
       console.log(
         "Processing getStatus"
@@ -1022,6 +1030,30 @@ async function restoreSession(
       error: error.message
     };
   }
+}
+
+async function getSessionDetails(
+  sessionPath
+) {
+  if (!sessionPath) {
+    throw new Error(
+      "Session path is required"
+    );
+  }
+
+  const sessionFile =
+    await fetchGitHubJson(sessionPath);
+
+  if (!sessionFile.exists) {
+    throw new Error(
+      "Session file not found"
+    );
+  }
+
+  return {
+    success: true,
+    session: sessionFile.data
+  };
 }
 
 /**
