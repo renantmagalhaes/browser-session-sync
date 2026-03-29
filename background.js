@@ -9,7 +9,7 @@
 
 const SESSIONS_DIR = "sessions";
 const INDEX_PATH = `${SESSIONS_DIR}/index.json`;
-const MAX_HISTORY_PER_CLIENT = 20;
+const MAX_HISTORY_PER_CLIENT = 30;
 
 console.log(
   "Service Worker: Initializing..."
@@ -88,6 +88,31 @@ async function handleMessage(request) {
         request.intervalMinutes
       );
       return { success: true };
+
+    case "archiveSessionManually":
+      console.log(
+        "Processing archiveSessionManually"
+      );
+      return await handleManualArchive(
+        request.sessionSummary
+      );
+
+    case "deleteSession":
+      console.log(
+        "Processing deleteSession"
+      );
+      return await handleManualDelete(
+        request.sessionSummary,
+        request.isFromArchive
+      );
+
+    case "searchArchive":
+      console.log(
+        "Processing searchArchive"
+      );
+      return await handleArchiveSearch(
+        request
+      );
 
     default:
       console.warn(
@@ -910,14 +935,10 @@ async function saveSessionToGitHub(
 
     for (const staleSession of retained.pruned) {
       try {
-        await deleteGitHubFile(
-          staleSession.path,
-          staleSession.sha,
-          `Prune old session snapshot ${staleSession.path}`
-        );
+        await archiveSession(staleSession);
       } catch (error) {
         console.warn(
-          "Failed to prune old session:",
+          "Failed to archive old session:",
           staleSession.path,
           error
         );
@@ -1103,6 +1124,252 @@ chrome.alarms.onAlarm.addListener(
     }
   }
 );
+
+/**
+ * Move a session from history to archive.
+ */
+async function archiveSession(sessionSummary) {
+  const profileKey =
+    sessionSummary.profileKey || "unknown";
+  const date = new Date(
+    sessionSummary.timestamp
+  );
+  const year = date.getUTCFullYear();
+  const month = String(
+    date.getUTCMonth() + 1
+  ).padStart(2, "0");
+  const filename = sessionSummary.path
+    .split("/")
+    .pop();
+  const archivePath = `${SESSIONS_DIR}/${profileKey}/archive/${year}/${month}/${filename}`;
+  const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+
+  // 1. Fetch the data if it's not already in the summary (summary is just metadata).
+  const sessionFile =
+    await fetchGitHubJson(
+      sessionSummary.path
+    );
+
+  if (!sessionFile.exists) {
+    console.warn(
+      `Session file ${sessionSummary.path} no longer exists; skipping archive.`
+    );
+    return;
+  }
+
+  // 2. Put into archive.
+  await putGitHubJson(
+    archivePath,
+    sessionFile.data,
+    `Archive session snapshot ${filename} to ${year}/${month}`
+  );
+
+  // 3. Update archive index.
+  const archiveIndexFile =
+    await fetchGitHubJson(
+      archiveIndexPath
+    );
+  const archiveIndex =
+    archiveIndexFile.exists
+      ? archiveIndexFile.data
+      : { sessions: [] };
+
+  const newSummary = {
+    ...sessionSummary,
+    path: archivePath,
+    sha: undefined // SHA will be fresh in archive.
+  };
+
+  archiveIndex.sessions.push(newSummary);
+  // Keep index sorted by timestamp (newest first).
+  archiveIndex.sessions.sort(
+    (a, b) =>
+      new Date(b.timestamp) -
+      new Date(a.timestamp)
+  );
+
+  await putGitHubJson(
+    archiveIndexPath,
+    archiveIndex,
+    `Update archive index for ${year}/${month}`,
+    archiveIndexFile.exists
+      ? archiveIndexFile.sha
+      : undefined
+  );
+
+  // 4. Delete the original history file.
+  await deleteGitHubFile(
+    sessionSummary.path,
+    sessionFile.sha,
+    `Delete archived session from history: ${filename}`
+  );
+
+  console.log(
+    `Archived ${sessionSummary.path} to ${archivePath}`
+  );
+}
+
+async function handleManualArchive(
+  sessionSummary
+) {
+  try {
+    // 1. Perform the archive move.
+    await archiveSession(sessionSummary);
+
+    // 2. Remove from the active index.
+    const index = await loadSessionIndex();
+    index.sessions =
+      index.sessions.filter(
+        (s) => s.path !== sessionSummary.path
+      );
+
+    await saveSessionIndex(index);
+
+    return { success: true };
+  } catch (error) {
+    console.error(
+      "Manual archive failed:",
+      error
+    );
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+async function handleManualDelete(
+  sessionSummary,
+  isFromArchive = false
+) {
+  try {
+    // 1. Delete the file from GitHub.
+    const file = await fetchGitHubJson(
+      sessionSummary.path
+    );
+    if (file.exists) {
+      await deleteGitHubFile(
+        sessionSummary.path,
+        file.sha,
+        `Manual delete of session: ${sessionSummary.path}`
+      );
+    }
+
+    // 2. Remove from the appropriate index.
+    if (isFromArchive) {
+      const profileKey =
+        sessionSummary.profileKey ||
+        (await getProfileStorageKey());
+      const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+      const archiveIndexFile =
+        await fetchGitHubJson(
+          archiveIndexPath
+        );
+
+      if (archiveIndexFile.exists) {
+        const archiveIndex =
+          archiveIndexFile.data;
+        archiveIndex.sessions =
+          archiveIndex.sessions.filter(
+            (s) =>
+              s.path !== sessionSummary.path
+          );
+        await putGitHubJson(
+          archiveIndexPath,
+          archiveIndex,
+          "Update archive index after manual delete",
+          archiveIndexFile.sha
+        );
+      }
+    } else {
+      const index = await loadSessionIndex();
+      index.sessions =
+        index.sessions.filter(
+          (s) =>
+            s.path !== sessionSummary.path
+        );
+      await saveSessionIndex(index);
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error(
+      "Manual delete failed:",
+      error
+    );
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+async function handleArchiveSearch(request) {
+  let profileKeys = [];
+
+  if (request.profileKey) {
+    profileKeys = [request.profileKey];
+  } else {
+    // List all potential profiles from SESSIONS_DIR.
+    const rootDir = await listGitHubDirectory(
+      SESSIONS_DIR
+    );
+    if (rootDir.exists) {
+      profileKeys = rootDir.entries
+        .filter((e) => e.type === "dir")
+        .map((e) => e.name);
+    }
+  }
+
+  let allArchivedSessions = [];
+
+  for (const profileKey of profileKeys) {
+    const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+    const archiveIndexFile =
+      await fetchGitHubJson(archiveIndexPath);
+
+    if (archiveIndexFile.exists) {
+      const sessions =
+        archiveIndexFile.data.sessions || [];
+      allArchivedSessions.push(...sessions);
+    }
+  }
+
+  if (allArchivedSessions.length === 0) {
+    return { success: true, sessions: [] };
+  }
+
+  // Sort all sessions by timestamp (newest first).
+  allArchivedSessions.sort(
+    (a, b) =>
+      new Date(b.timestamp) -
+      new Date(a.timestamp)
+  );
+
+  let results = allArchivedSessions;
+
+  if (request.query) {
+    const q = request.query.toLowerCase();
+    results = results.filter((s) => {
+      const searchText = (
+        s.searchText || ""
+      ).toLowerCase();
+      return (
+        searchText.includes(q) ||
+        (s.browserAlias || "")
+          .toLowerCase()
+          .includes(q) ||
+        (s.timestamp || "").includes(q)
+      );
+    });
+  }
+
+  // Limit results.
+  return {
+    success: true,
+    sessions: results.slice(0, 100)
+  };
+}
 
 /**
  * Handle extension installation

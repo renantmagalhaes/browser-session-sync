@@ -65,6 +65,14 @@ Automatic daily snapshot
 
 This keeps GitHub storage manageable while still preserving useful history.
 
+### History and Archiving
+
+The extension maintains an "Active History" of up to **30 snapshots** per profile (defined by `MAX_HISTORY_PER_CLIENT` in `background.js`).
+
+- **Active History**: The most recent 30 snapshots are kept in the `history/` folder for quick access in the main popup view.
+- **Automatic Archiving**: Once a profile exceeds 30 snapshots, the oldest ones are automatically moved to a permanent archive folder structured by year and month.
+- **Archive Search**: Archived sessions can be searched and restored using the 📂 **View Archive** button in the popup.
+
 ## Repository Structure
 
 Sessions are stored in your GitHub repository like this:
@@ -73,25 +81,31 @@ Sessions are stored in your GitHub repository like this:
 repository/
 └── sessions/
     ├── index.json
-    ├── work-laptop/
+    ├── {profileFolder}/
     │   ├── latest.json
-    │   └── history/
-    │       ├── session-1711104000000.json
-    │       └── session-1711190400000.json
-    └── personal-imac/
-        ├── latest.json
-        └── history/
-            └── session-1711107600000.json
+    │   ├── history/
+    │   │   └── session-{timestamp}.json (max 30)
+    │   └── archive/
+    │       ├── archive_index.json
+    │       └── {YYYY}/
+    │           └── {MM}/
+    │               └── session-{timestamp}.json
+    └── {otherProfile}/
+        ...
 ```
 
 ### File Meanings
 
 - `sessions/index.json`
-  - compact shared index used by the popup for fast listing and search
+  - compact shared index for active sessions across all profiles
 - `sessions/{profileFolder}/latest.json`
   - current live state for that profile
 - `sessions/{profileFolder}/history/session-{timestamp}.json`
-  - history checkpoints
+  - active snapshots (last 30)
+- `sessions/{profileFolder}/archive/archive_index.json`
+  - searchable index for that profile's archived sessions
+- `sessions/{profileFolder}/archive/{YYYY}/{MM}/session-{timestamp}.json`
+  - permanent historical snapshots
 
 ### Session JSON Format
 

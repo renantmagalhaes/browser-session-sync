@@ -75,17 +75,26 @@
         />
       </div>
 
-      <div class="sessions-section">
+      <div id="activeSessionsSection" class="sessions-section">
         <div class="sessions-heading">
           <h2>Saved Sessions</h2>
-          <select
-            id="profileFilter"
-            class="profile-filter"
-          >
-            <option value="__all__">
-              All Profiles
-            </option>
-          </select>
+          <div class="sessions-heading-actions">
+            <select
+              id="profileFilter"
+              class="profile-filter"
+            >
+              <option value="__all__">
+                All Profiles
+              </option>
+            </select>
+            <button
+              id="viewArchive"
+              class="icon-button"
+              title="View Archive"
+            >
+              📂
+            </button>
+          </div>
         </div>
         <div
           id="sessionsList"
@@ -93,6 +102,31 @@
         >
           <p class="loading">
             Loading sessions...
+          </p>
+        </div>
+      </div>
+
+      <div id="archiveSessionsSection" class="sessions-section" style="display: none;">
+        <div class="sessions-heading">
+          <h2>Archived Sessions</h2>
+          <button id="backToActive" class="btn btn-secondary btn-small">
+            ⬅️ Back
+          </button>
+        </div>
+        <div class="search-section-archive">
+           <input
+            type="text"
+            id="archiveSearchInput"
+            class="search-input"
+            placeholder="Search archive (title, URL, date)..."
+          />
+        </div>
+        <div
+          id="archiveList"
+          class="sessions-list"
+        >
+          <p class="empty">
+            Use the search box above to find archived sessions.
           </p>
         </div>
       </div>

@@ -557,17 +557,26 @@ function createSessionElement(session) {
   statsEl.className = "session-stats";
   statsEl.textContent = `${windowCount} window(s), ${tabCount} tab(s)`;
 
+  const actionsContainer =
+    document.createElement("div");
+  actionsContainer.className =
+    "btn-restore-inline";
+
   const restoreBtn =
     document.createElement("button");
   restoreBtn.className =
-    "btn btn-restore btn-restore-inline";
+    "btn btn-restore";
   restoreBtn.textContent = "Restore";
-  restoreBtn.onclick = () =>
+  restoreBtn.onclick = (e) => {
+    e.stopPropagation();
     restoreSession(session.path);
+  };
+
+  actionsContainer.appendChild(restoreBtn);
 
   headerDiv.appendChild(titleEl);
   headerDiv.appendChild(statsEl);
-  headerDiv.appendChild(restoreBtn);
+  headerDiv.appendChild(actionsContainer);
 
   const detailsEl =
     document.createElement("details");
@@ -580,6 +589,48 @@ function createSessionElement(session) {
     "session-summary";
   summaryEl.textContent =
     "Session details";
+
+  const manualActions = document.createElement("div");
+  manualActions.className = "manual-actions-details";
+
+  // Only show Archive/Delete for snapshots in the active view (not in the archive view itself)
+  const isArchiveView =
+    document.getElementById(
+      "archiveSessionsSection"
+    ).style.display === "flex";
+
+  if (!isArchiveView && kind !== "latest") {
+    const archiveBtn =
+      document.createElement("button");
+    archiveBtn.className = "btn-archive-item";
+    archiveBtn.textContent = "Archive";
+    archiveBtn.onclick = (e) => {
+      e.preventDefault();
+      archiveSessionManually(session);
+    };
+
+    const deleteBtn =
+      document.createElement("button");
+    deleteBtn.className = "btn-delete-item";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.onclick = (e) => {
+      e.preventDefault();
+      deleteSessionManually(session);
+    };
+
+    manualActions.appendChild(archiveBtn);
+    manualActions.appendChild(deleteBtn);
+  } else if (isArchiveView) {
+    const deleteBtn =
+      document.createElement("button");
+    deleteBtn.className = "btn-delete-item";
+    deleteBtn.textContent = "Delete snapshot";
+    deleteBtn.onclick = (e) => {
+      e.preventDefault();
+      deleteSessionManually(session, true);
+    };
+    manualActions.appendChild(deleteBtn);
+  }
 
   const tabsContainer =
     document.createElement("div");
@@ -747,6 +798,9 @@ function createSessionElement(session) {
   }
 
   detailsEl.appendChild(summaryEl);
+  if (manualActions.hasChildNodes()) {
+    detailsEl.appendChild(manualActions);
+  }
   detailsEl.appendChild(tabsContainer);
 
   div.appendChild(headerDiv);
@@ -898,6 +952,153 @@ async function saveSnapshot() {
   }
 }
 
+async function archiveSessionManually(
+  session
+) {
+  if (
+    !confirm(
+      "Move this session to the permanent archive?"
+    )
+  ) {
+    return;
+  }
+
+  try {
+    const response = await sendMessageWithRetry({
+      action: "archiveSessionManually",
+      sessionSummary: session
+    });
+
+    if (response && response.success) {
+      alert("✅ Session moved to archive.");
+      await loadSessions();
+    } else {
+      alert(
+        `❌ Error: ${response?.error || "Unknown error"}`
+      );
+    }
+  } catch (err) {
+    alert(`❌ Error: ${err.message}`);
+  }
+}
+
+async function deleteSessionManually(
+  session,
+  isFromArchive = false
+) {
+  if (
+    !confirm(
+      "Are you sure you want to PERMANENTLY delete this session? This cannot be undone."
+    )
+  ) {
+    return;
+  }
+
+  try {
+    const response = await sendMessageWithRetry({
+      action: "deleteSession",
+      sessionSummary: session,
+      isFromArchive: isFromArchive
+    });
+
+    if (response && response.success) {
+      alert("✅ Session deleted.");
+      if (isFromArchive) {
+        const query = document.getElementById(
+          "archiveSearchInput"
+        ).value;
+        await loadArchive(query);
+      } else {
+        await loadSessions();
+      }
+    } else {
+      alert(
+        `❌ Error: ${response?.error || "Unknown error"}`
+      );
+    }
+  } catch (err) {
+    alert(`❌ Error: ${err.message}`);
+  }
+}
+
+/**
+ * Archive Search and View
+ */
+function switchView(view) {
+  const activeSection = document.getElementById(
+    "activeSessionsSection"
+  );
+  const archiveSection = document.getElementById(
+    "archiveSessionsSection"
+  );
+  const searchSection = document.querySelector(
+    ".search-section"
+  );
+
+  if (view === "archive") {
+    activeSection.style.display = "none";
+    searchSection.style.display = "none";
+    archiveSection.style.display = "flex";
+    loadArchive("");
+  } else {
+    activeSection.style.display = "flex";
+    searchSection.style.display = "block";
+    archiveSection.style.display = "none";
+    loadSessions();
+  }
+}
+
+async function loadArchive(query = "") {
+  const archiveList =
+    document.getElementById("archiveList");
+  archiveList.innerHTML =
+    '<p class="loading">Searching archive...</p>';
+
+  try {
+    const response = await sendMessageWithRetry({
+      action: "searchArchive",
+      query: query,
+      profileKey:
+        selectedProfileKey === "__all__"
+          ? null
+          : selectedProfileKey
+    });
+
+    if (!response || !response.success) {
+      throw new Error(
+        response?.error ||
+          "Failed to load archive"
+      );
+    }
+
+    displayArchiveSessions(response.sessions);
+  } catch (error) {
+    console.error(
+      "Error loading archive:",
+      error
+    );
+    archiveList.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+  }
+}
+
+function displayArchiveSessions(sessions) {
+  const archiveList =
+    document.getElementById("archiveList");
+  archiveList.innerHTML = "";
+
+  if (sessions.length === 0) {
+    archiveList.innerHTML =
+      '<p class="empty">No archived sessions found.</p>';
+    return;
+  }
+
+  for (const session of sessions) {
+    const sessionEl =
+      createSessionElement(session);
+    archiveList.appendChild(sessionEl);
+  }
+}
+
 /**
  * Search/filter sessions
  */
@@ -966,6 +1167,21 @@ document
     "click",
     toggleTheme
   );
+document
+  .getElementById("viewArchive")
+  .addEventListener("click", () =>
+    switchView("archive")
+  );
+document
+  .getElementById("backToActive")
+  .addEventListener("click", () =>
+    switchView("active")
+  );
+document
+  .getElementById("archiveSearchInput")
+  .addEventListener("input", (e) => {
+    loadArchive(e.target.value);
+  });
 
 // Initialize on popup open
 (async () => {
