@@ -777,14 +777,24 @@ async function saveSessionToGitHub(
       browserAlias: alias,
       profileKey: profileStorageKey,
       clientId,
-      windows: windows.map((windowData) => ({
-        id: windowData.id,
-        tabs: windowData.tabs.map((tab) => ({
-          title: tab.title,
-          url: tab.url,
-          active: tab.active
+      windows: windows
+        .map((windowData) => ({
+          id: windowData.id,
+          tabs: windowData.tabs
+            .filter(
+              (tab) =>
+                tab.url !== "chrome://newtab/"
+            )
+            .map((tab) => ({
+              title: tab.title,
+              url: tab.url,
+              active: tab.active
+            }))
         }))
-      }))
+        .filter(
+          (windowData) =>
+            windowData.tabs.length > 0
+        )
     };
 
     const signature =
