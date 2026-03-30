@@ -662,11 +662,22 @@ input::placeholder {
 
 .manual-actions-details {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   padding: 0 12px 10px;
-  border-bottom: 1px solid var(--border-color);
-  margin-bottom: 10px;
+  border-bottom: 1px dashed var(--border-color);
+  margin-bottom: 12px;
 }
+
+.details-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.8;
+}
+
 
 .btn-archive-item,
 .btn-delete-item {

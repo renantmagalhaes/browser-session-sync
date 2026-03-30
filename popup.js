@@ -542,8 +542,9 @@ function createSessionElement(session) {
   titleEl.className = "session-title";
   const kind =
     getSessionKind(session);
+  const isLatest = kind === "latest";
   const kindLabel =
-    kind === "latest"
+    isLatest
       ? "Current"
       : "Snapshot";
   titleEl.innerHTML = `
@@ -587,8 +588,15 @@ function createSessionElement(session) {
     document.createElement("summary");
   summaryEl.className =
     "session-summary";
-  summaryEl.textContent =
-    "Session details";
+  const summaryText = isLatest 
+    ? `View ${tabCount} tabs`
+    : `Manage Snapshot & Tabs`;
+
+  summaryEl.innerHTML =
+    `<span style="display: flex; align-items: center; gap: 6px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+      ${summaryText}
+    </span>`;
 
   const manualActions = document.createElement("div");
   manualActions.className = "manual-actions-details";
@@ -600,7 +608,17 @@ function createSessionElement(session) {
     ).style.display === "flex";
 
   if (!isArchiveView && kind !== "latest") {
+    const label = document.createElement("span");
+    label.className = "details-section-label";
+    label.textContent = "Snapshot Actions";
+    manualActions.appendChild(label);
+
+    const actionsGroup = document.createElement("div");
+    actionsGroup.style.display = "flex";
+    actionsGroup.style.gap = "8px";
+
     const archiveBtn =
+
       document.createElement("button");
     archiveBtn.className = "btn-archive-item";
     archiveBtn.textContent = "Archive";
@@ -618,10 +636,17 @@ function createSessionElement(session) {
       deleteSessionManually(session);
     };
 
-    manualActions.appendChild(archiveBtn);
-    manualActions.appendChild(deleteBtn);
+    actionsGroup.appendChild(archiveBtn);
+    actionsGroup.appendChild(deleteBtn);
+    manualActions.appendChild(actionsGroup);
   } else if (isArchiveView) {
+    const label = document.createElement("span");
+    label.className = "details-section-label";
+    label.textContent = "Archive Actions";
+    manualActions.appendChild(label);
+
     const deleteBtn =
+
       document.createElement("button");
     deleteBtn.className = "btn-delete-item";
     deleteBtn.textContent = "Delete snapshot";
@@ -770,103 +795,97 @@ function createSessionElement(session) {
       "extra-tabs";
     extraTabsContainer.hidden = true;
 
-    moreBtn.onclick = async () => {
-      const isOpen =
-        !extraTabsContainer.hidden;
+    const loadExtraTabs = async () => {
+      moreBtn.disabled = true;
+      moreBtn.textContent = "Loading tabs...";
 
-      if (isOpen) {
-        extraTabsContainer.hidden = true;
-        moreBtn.textContent = `Show ${tabCount} tab${tabCount === 1 ? "" : "s"}`;
-        return;
-      }
-
-      if (
-        !extraTabsContainer.dataset.loaded
-      ) {
-        moreBtn.disabled = true;
-        moreBtn.textContent =
-          "Loading tabs...";
-
-        try {
-          let fullSession =
-            sessionDetailsCache.get(
-              session.path
-            );
-
-          if (!fullSession) {
-            const response =
-              await sendMessageWithRetry({
-                action:
-                  "getSessionDetails",
-                sessionPath:
-                  session.path
-              });
-
-            if (
-              !response ||
-              !response.success
-            ) {
-              throw new Error(
-                response?.error ||
-                  "Failed to load session details"
-              );
-            }
-
-            fullSession =
-              response.session;
-            sessionDetailsCache.set(
-              session.path,
-              fullSession
-            );
-          }
-
-          const allTabs =
-            getAllTabsFromSessionData(
-              fullSession
-            );
-
-          if (allTabs.length === 0) {
-            const emptyState =
-              document.createElement(
-                "div"
-              );
-            emptyState.className =
-              "extra-tabs-empty";
-            emptyState.textContent =
-              "No additional tabs to show.";
-            extraTabsContainer.appendChild(
-              emptyState
-            );
-          } else {
-            for (const tab of allTabs) {
-              extraTabsContainer.appendChild(createTabElement(tab, searchTerm));
-            }
-          }
-
-          extraTabsContainer.dataset.loaded =
-            "true";
-        } catch (error) {
-          const errorEl =
-            document.createElement("div");
-          errorEl.className =
-            "extra-tabs-error";
-          errorEl.textContent =
-            error.message ||
-            "Unable to load additional tabs.";
-          extraTabsContainer.replaceChildren(
-            errorEl
+      try {
+        let fullSession =
+          sessionDetailsCache.get(
+            session.path
           );
-          extraTabsContainer.dataset.loaded =
-            "true";
-        } finally {
-          moreBtn.disabled = false;
-        }
-      }
 
-      extraTabsContainer.hidden = false;
-      moreBtn.textContent =
-        "Hide tabs";
+        if (!fullSession) {
+          const response =
+            await sendMessageWithRetry({
+              action: "getSessionDetails",
+              sessionPath: session.path
+            });
+
+          if (!response || !response.success) {
+            throw new Error(
+              response?.error ||
+                "Failed to load session details"
+            );
+          }
+
+          fullSession = response.session;
+          sessionDetailsCache.set(
+            session.path,
+            fullSession
+          );
+        }
+
+        const allTabs =
+          getAllTabsFromSessionData(
+            fullSession
+          );
+
+        if (allTabs.length === 0) {
+          const emptyState =
+            document.createElement("div");
+          emptyState.className = "extra-tabs-empty";
+          emptyState.textContent = "No additional tabs to show.";
+          extraTabsContainer.appendChild(emptyState);
+        } else {
+          for (const tab of allTabs) {
+            extraTabsContainer.appendChild(createTabElement(tab, searchTerm));
+          }
+        }
+
+        extraTabsContainer.dataset.loaded = "true";
+      } catch (error) {
+        const errorEl =
+          document.createElement("div");
+        errorEl.className = "extra-tabs-error";
+        errorEl.textContent =
+          error.message ||
+          "Unable to load additional tabs.";
+        extraTabsContainer.replaceChildren(errorEl);
+        extraTabsContainer.dataset.loaded = "true";
+      } finally {
+        moreBtn.disabled = false;
+      }
     };
+
+    if (isLatest) {
+      moreBtn.style.display = "none";
+      detailsEl.addEventListener("toggle", async () => {
+        if (detailsEl.open && !extraTabsContainer.dataset.loaded) {
+          await loadExtraTabs();
+          extraTabsContainer.hidden = false;
+        } else if (detailsEl.open) {
+          extraTabsContainer.hidden = false;
+        }
+      });
+    } else {
+      moreBtn.onclick = async () => {
+        const isOpen = !extraTabsContainer.hidden;
+
+        if (isOpen) {
+          extraTabsContainer.hidden = true;
+          moreBtn.textContent = `Show ${tabCount} tab${tabCount === 1 ? "" : "s"}`;
+          return;
+        }
+
+        if (!extraTabsContainer.dataset.loaded) {
+          await loadExtraTabs();
+        }
+
+        extraTabsContainer.hidden = false;
+        moreBtn.textContent = "Hide tabs";
+      };
+    }
 
     extraSection.appendChild(moreBtn);
     extraSection.appendChild(
