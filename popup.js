@@ -637,27 +637,121 @@ function createSessionElement(session) {
   tabsContainer.className =
     "tabs-preview";
 
-  const previewTabs =
-    getPreviewTabs(session);
-  const remainingCount =
-    Math.max(
-      tabCount - previewTabs.length,
-      0
-    );
+  // Create a container for the matching tabs preview
+  const matchingTabsContainer =
+    document.createElement("div");
+  matchingTabsContainer.className =
+    "matching-tabs-preview";
+  tabsContainer.appendChild(matchingTabsContainer);
 
-  for (const tab of previewTabs) {
-    const tabEl =
-      document.createElement("div");
-    tabEl.className = "tab-preview";
-    tabEl.title = tab.url;
-    tabEl.innerHTML = `
-      <span class="tab-title">${escapeHtml(tab.title || "Untitled")}</span>
-      <span class="tab-url">${escapeHtml(getDisplayHostname(tab.url))}</span>
-    `;
-    tabsContainer.appendChild(tabEl);
+  const searchTerm = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
+
+  if (searchTerm) {
+    detailsEl.open = true;
   }
 
-  if (remainingCount > 0) {
+  const extraSection =
+    document.createElement("div");
+  extraSection.className =
+    "tabs-more-section";
+
+  const moreBtn =
+    document.createElement("button");
+  moreBtn.type = "button";
+  moreBtn.className =
+    "tabs-more-toggle";
+  moreBtn.textContent = `Show ${tabCount} tab${tabCount === 1 ? "" : "s"}`;
+
+  const extraTabsContainer =
+    document.createElement("div");
+  extraTabsContainer.className =
+    "extra-tabs";
+  extraTabsContainer.hidden = true;
+
+  // Helper function to build a single tab element
+  function createTabElement(tab, searchQ = "") {
+    const tabEl = document.createElement("div");
+    tabEl.className = "tab-preview extra";
+    tabEl.title = tab.url;
+    
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "tab-title";
+    
+    const urlSpan = document.createElement("span");
+    urlSpan.className = "tab-url";
+    
+    // Highlight logic
+    const titleText = tab.title || "Untitled";
+    const urlText = getDisplayHostname(tab.url);
+    
+    if (searchQ) {
+      const regex = new RegExp(`(${searchQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, "gi");
+      titleSpan.innerHTML = escapeHtml(titleText).replace(regex, "<mark>$1</mark>");
+      urlSpan.innerHTML = escapeHtml(urlText).replace(regex, "<mark>$1</mark>");
+    } else {
+      titleSpan.textContent = titleText;
+      urlSpan.textContent = urlText;
+    }
+
+    const openBtn = document.createElement("button");
+    openBtn.className = "btn-open-tab";
+    openBtn.textContent = "Open";
+    openBtn.onclick = (e) => {
+      e.stopPropagation();
+      chrome.tabs.create({ url: tab.url, active: false });
+    };
+
+    tabEl.appendChild(titleSpan);
+    tabEl.appendChild(urlSpan);
+    tabEl.appendChild(openBtn);
+    return tabEl;
+  }
+
+  // If there's a search term, load the session gracefully to show exact matches immediately inside the details.
+  if (searchTerm && tabCount > 0) {
+    matchingTabsContainer.innerHTML = '<div class="loading-matches">🔍 Finding matches...</div>';
+    
+    (async () => {
+      try {
+        let fullSession = sessionDetailsCache.get(session.path);
+        if (!fullSession) {
+          const response = await sendMessageWithRetry({
+            action: "getSessionDetails",
+            sessionPath: session.path
+          });
+          if (response && response.success) {
+            fullSession = response.session;
+            sessionDetailsCache.set(session.path, fullSession);
+          }
+        }
+
+        matchingTabsContainer.innerHTML = "";
+        
+        if (fullSession) {
+          const allTabs = getAllTabsFromSessionData(fullSession);
+          const matchedTabs = allTabs.filter(tab => {
+            return (tab.title && tab.title.toLowerCase().includes(searchTerm)) ||
+                   (tab.url && tab.url.toLowerCase().includes(searchTerm));
+          });
+
+          if (matchedTabs.length > 0) {
+            const matchesHeader = document.createElement("div");
+            matchesHeader.className = "matches-header";
+            matchesHeader.textContent = `${matchedTabs.length} matching tab${matchedTabs.length === 1 ? "" : "s"}:`;
+            matchingTabsContainer.appendChild(matchesHeader);
+
+            for (const tab of matchedTabs) {
+              matchingTabsContainer.appendChild(createTabElement(tab, searchTerm));
+            }
+          }
+        }
+      } catch (err) {
+        matchingTabsContainer.innerHTML = "";
+      }
+    })();
+  }
+
+  if (tabCount > 0) {
     const extraSection =
       document.createElement("div");
     extraSection.className =
@@ -668,7 +762,7 @@ function createSessionElement(session) {
     moreBtn.type = "button";
     moreBtn.className =
       "tabs-more-toggle";
-    moreBtn.textContent = `Show ${remainingCount} more tab${remainingCount === 1 ? "" : "s"}`;
+    moreBtn.textContent = `Show ${tabCount} tab${tabCount === 1 ? "" : "s"}`;
 
     const extraTabsContainer =
       document.createElement("div");
@@ -682,7 +776,7 @@ function createSessionElement(session) {
 
       if (isOpen) {
         extraTabsContainer.hidden = true;
-        moreBtn.textContent = `Show ${remainingCount} more tab${remainingCount === 1 ? "" : "s"}`;
+        moreBtn.textContent = `Show ${tabCount} tab${tabCount === 1 ? "" : "s"}`;
         return;
       }
 
@@ -726,14 +820,12 @@ function createSessionElement(session) {
             );
           }
 
-          const extraTabs =
+          const allTabs =
             getAllTabsFromSessionData(
               fullSession
-            ).slice(
-              previewTabs.length
             );
 
-          if (extraTabs.length === 0) {
+          if (allTabs.length === 0) {
             const emptyState =
               document.createElement(
                 "div"
@@ -746,22 +838,8 @@ function createSessionElement(session) {
               emptyState
             );
           } else {
-            for (const tab of extraTabs) {
-              const extraTabEl =
-                document.createElement(
-                  "div"
-                );
-              extraTabEl.className =
-                "tab-preview extra";
-              extraTabEl.title =
-                tab.url;
-              extraTabEl.innerHTML = `
-                <span class="tab-title">${escapeHtml(tab.title || "Untitled")}</span>
-                <span class="tab-url">${escapeHtml(getDisplayHostname(tab.url))}</span>
-              `;
-              extraTabsContainer.appendChild(
-                extraTabEl
-              );
+            for (const tab of allTabs) {
+              extraTabsContainer.appendChild(createTabElement(tab, searchTerm));
             }
           }
 
@@ -787,7 +865,7 @@ function createSessionElement(session) {
 
       extraTabsContainer.hidden = false;
       moreBtn.textContent =
-        "Hide extra tabs";
+        "Hide tabs";
     };
 
     extraSection.appendChild(moreBtn);
