@@ -249,6 +249,16 @@ function getFilteredSessions() {
       return false;
     }
 
+    const kind = getSessionKind(session);
+    if (kind === "history") {
+      const date = new Date(getSessionTimestamp(session));
+      const isToday = date.toDateString() === new Date().toDateString();
+      const isRollingSnapshot = !session.pinned && !session.friendlyName;
+      if (isToday && isRollingSnapshot) {
+        return false;
+      }
+    }
+
     if (!searchTerm) {
       return true;
     }
@@ -543,12 +553,31 @@ function createSessionElement(session) {
   const kind =
     getSessionKind(session);
   const isLatest = kind === "latest";
+  const isToday = date.toDateString() === new Date().toDateString();
   const kindLabel =
     isLatest
       ? "Current"
-      : "Snapshot";
+      : isToday
+        ? "Today's Snapshot"
+        : "Snapshot";
+  const isArchiveView =
+    document.getElementById(
+      "archiveSessionsSection"
+    ).style.display === "flex";
+
+  const isPinned = session.pinned && !isArchiveView;
+  const friendlyName = session.friendlyName || null;
+  const titlePrefix = isPinned ? "📌 " : "";
+  const displayTitle = friendlyName
+    ? escapeHtml(friendlyName)
+    : escapeHtml(getSessionAlias(session));
+  const subText = friendlyName
+    ? `<span class="session-date" style="margin-left:8px;">[${escapeHtml(getSessionAlias(session))}]</span>`
+    : "";
+
   titleEl.innerHTML = `
-    <strong>${escapeHtml(getSessionAlias(session))}</strong>
+    <strong>${titlePrefix}${displayTitle}</strong>
+    ${subText}
     <span class="session-kind ${kind === "latest" ? "current" : "snapshot"}">${escapeHtml(kindLabel)}</span>
     <span class="session-date">${date.toLocaleString()}</span>
   `;
@@ -602,10 +631,6 @@ function createSessionElement(session) {
   manualActions.className = "manual-actions-details";
 
   // Only show Archive/Delete for snapshots in the active view (not in the archive view itself)
-  const isArchiveView =
-    document.getElementById(
-      "archiveSessionsSection"
-    ).style.display === "flex";
 
   if (!isArchiveView && kind !== "latest") {
     const label = document.createElement("span");
@@ -636,8 +661,28 @@ function createSessionElement(session) {
       deleteSessionManually(session);
     };
 
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "btn-archive-item";
+    renameBtn.textContent = "Rename";
+    renameBtn.onclick = (e) => {
+      e.preventDefault();
+      const newName = prompt("Enter new friendly name (or leave empty to reset):", friendlyName || "");
+      if (newName !== null) renameSessionManually(session.path, newName);
+    };
+
+    const pinBtn = document.createElement("button");
+    pinBtn.className = "btn-archive-item";
+    pinBtn.textContent = isPinned ? "Unpin" : "Pin";
+    pinBtn.onclick = (e) => {
+      e.preventDefault();
+      toggleSessionPinManually(session.path, !isPinned);
+    };
+
+    actionsGroup.appendChild(renameBtn);
+    actionsGroup.appendChild(pinBtn);
     actionsGroup.appendChild(archiveBtn);
     actionsGroup.appendChild(deleteBtn);
+
     manualActions.appendChild(actionsGroup);
   } else if (isArchiveView) {
     const label = document.createElement("span");
@@ -645,16 +690,40 @@ function createSessionElement(session) {
     label.textContent = "Archive Actions";
     manualActions.appendChild(label);
 
-    const deleteBtn =
+    const archiveActionsGroup = document.createElement("div");
+    archiveActionsGroup.style.display = "flex";
+    archiveActionsGroup.style.gap = "8px";
 
-      document.createElement("button");
+    const renameBtnArchive = document.createElement("button");
+    renameBtnArchive.className = "btn-archive-item";
+    renameBtnArchive.textContent = "Rename";
+    renameBtnArchive.onclick = (e) => {
+      e.preventDefault();
+      const newName = prompt("Enter new friendly name (or leave empty to reset):", friendlyName || "");
+      if (newName !== null) renameSessionManually(session.path, newName);
+    };
+
+    const unarchiveBtn = document.createElement("button");
+    unarchiveBtn.className = "btn-archive-item";
+    unarchiveBtn.textContent = "Unarchive";
+    unarchiveBtn.onclick = (e) => {
+      e.preventDefault();
+      unarchiveSessionManually(session);
+    };
+
+    const deleteBtn = document.createElement("button");
     deleteBtn.className = "btn-delete-item";
     deleteBtn.textContent = "Delete snapshot";
     deleteBtn.onclick = (e) => {
       e.preventDefault();
       deleteSessionManually(session, true);
     };
-    manualActions.appendChild(deleteBtn);
+
+    archiveActionsGroup.appendChild(renameBtnArchive);
+    archiveActionsGroup.appendChild(unarchiveBtn);
+    archiveActionsGroup.appendChild(deleteBtn);
+
+    manualActions.appendChild(archiveActionsGroup);
   }
 
   const tabsContainer =
@@ -999,6 +1068,11 @@ async function syncNow() {
 }
 
 async function saveSnapshot() {
+  const friendlyName = prompt("Give this snapshot a friendly name (optional):");
+  if (friendlyName === null) return;
+
+  const finalName = friendlyName.trim() === "" ? "Manual Snapshot" : friendlyName;
+
   const btn =
     document.getElementById(
       "saveSnapshot"
@@ -1010,7 +1084,8 @@ async function saveSnapshot() {
   try {
     const response =
       await sendMessageWithRetry({
-        action: "saveSnapshot"
+        action: "saveSnapshot",
+        friendlyName: finalName
       });
 
     if (!response) {
@@ -1073,6 +1148,76 @@ async function archiveSessionManually(
       alert(
         `❌ Error: ${response?.error || "Unknown error"}`
       );
+    }
+  } catch (err) {
+    alert(`❌ Error: ${err.message}`);
+  }
+}
+
+async function unarchiveSessionManually(session) {
+  if (!confirm("Restore this session back to your active saved sessions?")) {
+    return;
+  }
+
+  try {
+    const response = await sendMessageWithRetry({
+      action: "unarchiveSession",
+      sessionSummary: session
+    });
+
+    if (response && response.success) {
+      alert("✅ Session successfully unarchived back to your active list.");
+      const query = document.getElementById("archiveSearchInput").value;
+      await loadArchive(query); // refresh archive
+      await loadSessions();     // refresh active sessions in background
+    } else {
+      alert(`❌ Error: ${response?.error || "Unknown error"}`);
+    }
+  } catch (err) {
+    alert(`❌ Error: ${err.message}`);
+  }
+}
+
+async function renameSessionManually(sessionPath, newName) {
+  try {
+    const response = await sendMessageWithRetry({
+      action: "renameSession",
+      sessionPath: sessionPath,
+      newName: newName
+    });
+    if (response && response.success) {
+      const isArchiveView = document.getElementById("archiveSessionsSection").style.display === "flex";
+      if (isArchiveView) {
+          const query = document.getElementById("archiveSearchInput").value;
+          await loadArchive(query);
+      } else {
+          await loadSessions();
+      }
+    } else {
+      alert(`❌ Error: ${response?.error || "Unknown error"}`);
+    }
+  } catch (err) {
+    alert(`❌ Error: ${err.message}`);
+  }
+}
+
+async function toggleSessionPinManually(sessionPath, isPinned) {
+  try {
+    const response = await sendMessageWithRetry({
+      action: "toggleSessionPin",
+      sessionPath: sessionPath,
+      isPinned: isPinned
+    });
+    if (response && response.success) {
+      const isArchiveView = document.getElementById("archiveSessionsSection").style.display === "flex";
+      if (isArchiveView) {
+          const query = document.getElementById("archiveSearchInput").value;
+          await loadArchive(query);
+      } else {
+          await loadSessions();
+      }
+    } else {
+      alert(`❌ Error: ${response?.error || "Unknown error"}`);
     }
   } catch (err) {
     alert(`❌ Error: ${err.message}`);

@@ -30,8 +30,24 @@ async function handleMessage(request) {
         "Processing saveSnapshot"
       );
       return await saveSessionToGitHub({
-        forceSnapshot: true
+        forceSnapshot: true,
+        friendlyName: request.friendlyName || null,
+        pinned: request.pinned || false
       });
+
+    case "renameSession":
+      console.log("Processing renameSession");
+      return await handleRenameSession(
+        request.sessionPath,
+        request.newName
+      );
+
+    case "toggleSessionPin":
+      console.log("Processing toggleSessionPin");
+      return await handleToggleSessionPin(
+        request.sessionPath,
+        request.isPinned
+      );
 
     case "listSessions":
       console.log(
@@ -112,6 +128,12 @@ async function handleMessage(request) {
       );
       return await handleArchiveSearch(
         request
+      );
+
+    case "unarchiveSession":
+      console.log("Processing unarchiveSession");
+      return await handleUnarchiveSession(
+        request.sessionSummary
       );
 
     default:
@@ -298,7 +320,7 @@ async function fetchGitHubJson(path) {
     await getGitHubHeaders();
   const response = await fetch(
     `${repoUrl}/contents/${path}`,
-    { headers }
+    { headers, cache: "no-store" }
   );
 
   if (response.status === 404) {
@@ -334,7 +356,7 @@ async function listGitHubDirectory(path) {
     await getGitHubHeaders();
   const response = await fetch(
     `${repoUrl}/contents/${path}`,
-    { headers }
+    { headers, cache: "no-store" }
   );
 
   if (response.status === 404) {
@@ -393,8 +415,8 @@ async function putGitHubJson(
       await parseGitHubError(response);
     const shouldRetryWithFreshSha =
       attempt === 0 &&
-      response.status === 422 &&
-      errorMessage.includes("sha");
+      (response.status === 409 || response.status === 422) &&
+      (errorMessage.includes("sha") || errorMessage.includes("does not match"));
 
     if (!shouldRetryWithFreshSha) {
       throw new Error(errorMessage);
@@ -514,6 +536,8 @@ function buildSessionSummary(
     windowCount:
       sessionData.windows.length,
     tabCount: tabs.length,
+    friendlyName: sessionData.friendlyName || null,
+    pinned: sessionData.pinned || false,
     previewTabs: tabs
       .slice(0, 3)
       .map((tab) => ({
@@ -531,11 +555,11 @@ function applyRetention(
   sessionEntries
 ) {
   const pinned = sessionEntries.filter(
-    (session) => session.kind === "latest"
+    (session) => session.kind === "latest" || session.pinned
   );
   const historyEntries =
     sessionEntries.filter(
-      (session) => session.kind !== "latest"
+      (session) => session.kind !== "latest" && !session.pinned
     );
   const keptHistory = [];
   const pruned = [];
@@ -791,6 +815,8 @@ async function saveSessionToGitHub(
     const forceSnapshot = Boolean(
       options.forceSnapshot
     );
+    const friendlyName = options.friendlyName || null;
+    const pinned = Boolean(options.pinned);
 
     const windows =
       await chrome.windows.getAll({
@@ -802,6 +828,8 @@ async function saveSessionToGitHub(
       browserAlias: alias,
       profileKey: profileStorageKey,
       clientId,
+      friendlyName,
+      pinned,
       windows: windows
         .map((windowData) => ({
           id: windowData.id,
@@ -853,10 +881,16 @@ async function saveSessionToGitHub(
     sessionData.signature = signature;
     const historyPath = `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}.json`;
 
+    const latestSessionData = {
+      ...sessionData,
+      friendlyName: null,
+      pinned: false
+    };
+
     const latestResponse =
       await putGitHubJson(
       latestPath,
-      sessionData,
+      latestSessionData,
       `Update latest session for ${alias}`,
       latestFile.exists
         ? latestFile.sha
@@ -866,7 +900,7 @@ async function saveSessionToGitHub(
       await loadSessionIndex();
     const latestSummary =
       buildSessionSummary(
-        sessionData,
+        latestSessionData,
         latestPath,
         latestResponse.content.sha,
         "latest"
@@ -884,24 +918,28 @@ async function saveSessionToGitHub(
             new Date(b.timestamp) -
             new Date(a.timestamp)
         );
-    const mostRecentSnapshot =
-      currentProfileHistory[0];
-    const shouldCreateDailySnapshot =
-      forceSnapshot ||
-      !mostRecentSnapshot ||
-      !isSameCalendarDay(
-        mostRecentSnapshot.timestamp,
+    const mostRecentUnpinnedSnapshot =
+      currentProfileHistory.find(s => !s.pinned && !s.friendlyName);
+
+    const isSameDay = 
+      mostRecentUnpinnedSnapshot && 
+      !forceSnapshot && 
+      isSameCalendarDay(
+        mostRecentUnpinnedSnapshot.timestamp,
         sessionData.timestamp
       );
+      
+    const shouldCreateNewSnapshot = !isSameDay;
 
     let historySummary = null;
+    let finalHistoryPath = historyPath;
 
-    if (shouldCreateDailySnapshot) {
+    if (shouldCreateNewSnapshot) {
       const historyResponse =
         await putGitHubJson(
           historyPath,
           sessionData,
-          `Save session snapshot from ${alias} at ${sessionData.timestamp}`
+          `Create daily snapshot for ${alias}`
         );
 
       historySummary =
@@ -911,12 +949,29 @@ async function saveSessionToGitHub(
           historyResponse.content.sha,
           "history"
         );
+    } else {
+      finalHistoryPath = mostRecentUnpinnedSnapshot.path;
+      const historyResponse =
+        await putGitHubJson(
+          finalHistoryPath,
+          sessionData,
+          `Update daily snapshot for ${alias}`,
+          mostRecentUnpinnedSnapshot.sha
+        );
+
+      historySummary =
+        buildSessionSummary(
+          sessionData,
+          finalHistoryPath,
+          historyResponse.content.sha,
+          "history"
+        );
     }
 
     const withoutDuplicatePath =
       currentIndex.sessions.filter(
         (session) =>
-          session.path !== historyPath &&
+          session.path !== finalHistoryPath &&
           session.path !== latestPath
       );
     const retained = applyRetention(
@@ -953,21 +1008,21 @@ async function saveSessionToGitHub(
 
     console.log(
       "Session saved successfully:",
-      historyPath
+      finalHistoryPath
     );
     return {
       success: true,
-      filePath: shouldCreateDailySnapshot
-        ? historyPath
+      filePath: shouldCreateNewSnapshot
+        ? finalHistoryPath
         : latestPath,
       latestPath,
       snapshotCreated:
-        shouldCreateDailySnapshot,
+        shouldCreateNewSnapshot,
       snapshotReason: forceSnapshot
         ? "manual"
-        : shouldCreateDailySnapshot
+        : shouldCreateNewSnapshot
           ? "daily"
-          : "none"
+          : "update"
     };
   } catch (error) {
     console.error(
@@ -1157,10 +1212,15 @@ async function archiveSession(sessionSummary) {
     return;
   }
 
+  const sessionDataToArchive = {
+    ...sessionFile.data,
+    pinned: false
+  };
+
   // 2. Put into archive.
   await putGitHubJson(
     archivePath,
-    sessionFile.data,
+    sessionDataToArchive,
     `Archive session snapshot ${filename} to ${year}/${month}`
   );
 
@@ -1177,6 +1237,7 @@ async function archiveSession(sessionSummary) {
   const newSummary = {
     ...sessionSummary,
     path: archivePath,
+    pinned: false,
     sha: undefined // SHA will be fresh in archive.
   };
 
@@ -1235,6 +1296,71 @@ async function handleManualArchive(
       success: false,
       error: error.message
     };
+  }
+}
+
+async function handleUnarchiveSession(sessionSummary) {
+  try {
+    const profileKey =
+      sessionSummary.profileKey ||
+      (await getProfileStorageKey());
+    const filename = sessionSummary.path.split("/").pop();
+    const historyPath = `${SESSIONS_DIR}/${profileKey}/history/${filename}`;
+    const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+
+    // 1. Fetch from archive
+    const sessionFile = await fetchGitHubJson(sessionSummary.path);
+    if (!sessionFile.exists) throw new Error("Archived session file missing");
+
+    // 2. Put back to history without pinning
+    const sessionData = { ...sessionFile.data, pinned: false };
+    const historyResponse = await putGitHubJson(
+      historyPath,
+      sessionData,
+      `Unarchive session: ${filename}`
+    );
+
+    // 3. Remove from archive_index
+    const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
+    if (archiveIndexFile.exists) {
+      const archiveIndex = archiveIndexFile.data;
+      archiveIndex.sessions = archiveIndex.sessions.filter(
+        (s) => s.path !== sessionSummary.path
+      );
+      await putGitHubJson(
+        archiveIndexPath,
+        archiveIndex,
+        "Update archive index after unarchiving",
+        archiveIndexFile.sha
+      );
+    }
+
+    // 4. Delete the file from archive folder
+    await deleteGitHubFile(
+      sessionSummary.path,
+      sessionFile.sha,
+      `Delete unarchived session from archive: ${filename}`
+    );
+
+    // 5. Add to active index
+    const index = await loadSessionIndex();
+    const newSummary = {
+      ...sessionSummary,
+      path: historyPath,
+      pinned: false,
+      sha: historyResponse.content.sha
+    };
+    
+    // remove any duplicates just in case
+    index.sessions = index.sessions.filter(s => s.path !== historyPath);
+    index.sessions.push(newSummary);
+    index.sessions.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    await saveSessionIndex(index);
+
+    return { success: true };
+  } catch (error) {
+    console.error("Unarchive failed:", error);
+    return { success: false, error: error.message };
   }
 }
 
@@ -1369,6 +1495,102 @@ async function handleArchiveSearch(request) {
     success: true,
     sessions: results.slice(0, 100)
   };
+}
+
+async function handleRenameSession(sessionPath, newName) {
+  try {
+    const file = await fetchGitHubJson(sessionPath);
+    if (!file.exists) throw new Error("Session file not found");
+
+    const sessionData = file.data;
+    sessionData.friendlyName = newName || null;
+
+    const response = await putGitHubJson(
+      sessionPath,
+      sessionData,
+      `Rename session to ${newName || "default"}`,
+      file.sha
+    );
+
+    const isArchived = sessionPath.includes("/archive/");
+    const profileKey = sessionPath.split("/")[1];
+
+    if (isArchived) {
+      const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+      const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
+      if (archiveIndexFile.exists) {
+        const sessionIndex = archiveIndexFile.data.sessions.findIndex(s => s.path === sessionPath);
+        if (sessionIndex !== -1) {
+          archiveIndexFile.data.sessions[sessionIndex].friendlyName = sessionData.friendlyName;
+          await putGitHubJson(
+            archiveIndexPath,
+            archiveIndexFile.data,
+            `Rename archived session summary`,
+            archiveIndexFile.sha
+          );
+        }
+      }
+    } else {
+      const index = await loadSessionIndex();
+      const sessionIndex = index.sessions.findIndex(s => s.path === sessionPath);
+      if (sessionIndex !== -1) {
+        index.sessions[sessionIndex].friendlyName = sessionData.friendlyName;
+        await saveSessionIndex(index);
+      }
+    }
+    return { success: true };
+  } catch (error) {
+    console.error("Error renaming session", error);
+    return { success: false, error: error.message };
+  }
+}
+
+async function handleToggleSessionPin(sessionPath, isPinned) {
+  try {
+    const file = await fetchGitHubJson(sessionPath);
+    if (!file.exists) throw new Error("Session file not found");
+
+    const sessionData = file.data;
+    sessionData.pinned = isPinned;
+
+    const response = await putGitHubJson(
+      sessionPath,
+      sessionData,
+      `${isPinned ? "Pin" : "Unpin"} session`,
+      file.sha
+    );
+
+    const isArchived = sessionPath.includes("/archive/");
+    const profileKey = sessionPath.split("/")[1];
+
+    if (isArchived) {
+      const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+      const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
+      if (archiveIndexFile.exists) {
+        const sessionIndex = archiveIndexFile.data.sessions.findIndex(s => s.path === sessionPath);
+        if (sessionIndex !== -1) {
+          archiveIndexFile.data.sessions[sessionIndex].pinned = sessionData.pinned;
+          await putGitHubJson(
+            archiveIndexPath,
+            archiveIndexFile.data,
+            `Toggle pin on archived session summary`,
+            archiveIndexFile.sha
+          );
+        }
+      }
+    } else {
+      const index = await loadSessionIndex();
+      const sessionIndex = index.sessions.findIndex(s => s.path === sessionPath);
+      if (sessionIndex !== -1) {
+        index.sessions[sessionIndex].pinned = sessionData.pinned;
+        await saveSessionIndex(index);
+      }
+    }
+    return { success: true };
+  } catch (error) {
+    console.error("Error toggling pin", error);
+    return { success: false, error: error.message };
+  }
 }
 
 /**
