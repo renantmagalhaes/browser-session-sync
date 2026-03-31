@@ -545,9 +545,21 @@ function displaySessions(
     const yesterday = new Date(today);
     yesterday.setDate(today.getDate() - 1);
 
+    const timeDiff = today.getTime() - d.getTime();
+    const dayDiff = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
+
     if (d.toDateString() === today.toDateString()) return "Today";
     if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-    return d.toLocaleDateString();
+    
+    // Within the last week (7 days), show the day name + relative days ago
+    if (dayDiff < 7) {
+      const dayName = d.toLocaleDateString(undefined, { weekday: "long" });
+      return `${dayName} (${dayDiff} days ago)`;
+    }
+    
+    // Older than a week, show the full date + relative days ago
+    const fullDate = d.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+    return `${fullDate} (${dayDiff} days ago)`;
   };
 
   if (containerId === "timelineList") {
