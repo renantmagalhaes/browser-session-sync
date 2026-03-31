@@ -15,6 +15,15 @@ console.log(
   "Service Worker: Initializing..."
 );
 
+/**
+ * Utility to wait for X ms
+ */
+function sleep(ms) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, ms)
+  );
+}
+
 async function handleMessage(request) {
   switch (request.action) {
     case "saveSession":
@@ -398,7 +407,7 @@ async function putGitHubJson(
     await getGitHubHeaders();
   let currentSha = sha;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const response = await fetch(
       `${repoUrl}/contents/${path}`,
       {
@@ -422,14 +431,27 @@ async function putGitHubJson(
 
     const errorMessage =
       await parseGitHubError(response);
-    const shouldRetryWithFreshSha =
-      attempt === 0 &&
-      (response.status === 409 || response.status === 422) &&
-      (errorMessage.includes("sha") || errorMessage.includes("does not match"));
+    
+    // Check for SHA mismatch or generic update conflict
+    const isConflict =
+      response.status === 409 ||
+      response.status === 422 ||
+      errorMessage.toLowerCase().includes("sha") ||
+      errorMessage.toLowerCase().includes("conflict") ||
+      errorMessage.toLowerCase().includes("expected");
 
-    if (!shouldRetryWithFreshSha) {
+    const shouldRetry = attempt < 2 && isConflict;
+
+    if (!shouldRetry) {
       throw new Error(errorMessage);
     }
+
+    console.warn(
+      `Conflict detected on ${path} (Attempt ${attempt + 1}), retrying with fresh SHA...`
+    );
+
+    // Random jitter between 200ms and 1500ms to resolve races
+    await sleep(200 + Math.random() * 1300);
 
     const existingFile =
       await fetchGitHubJson(path);
@@ -455,22 +477,55 @@ async function deleteGitHubFile(
   const repoUrl = await getRepoUrl();
   const headers =
     await getGitHubHeaders();
-  const response = await fetch(
-    `${repoUrl}/contents/${path}`,
-    {
-      method: "DELETE",
-      headers,
-      body: JSON.stringify({
-        message,
-        sha
-      })
-    }
-  );
+  let currentSha = sha;
 
-  if (!response.ok && response.status !== 404) {
-    throw new Error(
-      await parseGitHubError(response)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await fetch(
+      `${repoUrl}/contents/${path}`,
+      {
+        method: "DELETE",
+        headers,
+        body: JSON.stringify({
+          message,
+          sha: currentSha
+        })
+      }
     );
+
+    if (response.ok || response.status === 404) {
+      return;
+    }
+
+    const errorMessage =
+      await parseGitHubError(response);
+    
+    // Check for SHA mismatch
+    const isConflict =
+      response.status === 409 ||
+      response.status === 422 ||
+      errorMessage.toLowerCase().includes("sha") ||
+      errorMessage.toLowerCase().includes("conflict") ||
+      errorMessage.toLowerCase().includes("expected");
+
+    const shouldRetry = attempt < 2 && isConflict;
+
+    if (!shouldRetry) {
+      throw new Error(errorMessage);
+    }
+
+    console.warn(
+      `Conflict detected on delete ${path} (Attempt ${attempt + 1}), retrying...`
+    );
+
+    // Random jitter before retry
+    await sleep(200 + Math.random() * 1300);
+
+    const existingFile =
+      await fetchGitHubJson(path);
+    if (!existingFile.exists) {
+      return;
+    }
+    currentSha = existingFile.sha;
   }
 }
 
