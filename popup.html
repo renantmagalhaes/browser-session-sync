@@ -75,9 +75,15 @@
         />
       </div>
 
+      <div class="view-tabs">
+        <button id="tabActive" class="view-tab active">Saved</button>
+        <button id="tabTimeline" class="view-tab">Timeline</button>
+        <button id="tabArchive" class="view-tab">Archive</button>
+      </div>
+
       <div id="activeSessionsSection" class="sessions-section">
         <div class="sessions-heading">
-          <h2>Saved Sessions</h2>
+          <h2>Active Snapshots</h2>
           <div class="sessions-heading-actions">
             <select
               id="profileFilter"
@@ -87,13 +93,6 @@
                 All Profiles
               </option>
             </select>
-            <button
-              id="viewArchive"
-              class="icon-button"
-              title="View Archive"
-            >
-              📂
-            </button>
           </div>
         </div>
         <div
@@ -106,12 +105,18 @@
         </div>
       </div>
 
+      <div id="timelineSessionsSection" class="sessions-section" style="display: none;">
+        <div class="sessions-heading">
+          <h2>Timeline Snapshots</h2>
+        </div>
+        <div class="sessions-list" id="timelineList">
+          <p class="empty">No timeline snapshots recorded for today or yesterday.</p>
+        </div>
+      </div>
+
       <div id="archiveSessionsSection" class="sessions-section" style="display: none;">
         <div class="sessions-heading">
-          <h2>Archived Sessions</h2>
-          <button id="backToActive" class="btn btn-secondary btn-small">
-            ⬅️ Back
-          </button>
+          <h2>Archived Vault</h2>
         </div>
         <div class="search-section-archive">
            <input

@@ -105,6 +105,11 @@ async function handleMessage(request) {
       );
       return { success: true };
 
+    case "setupTimeline":
+      console.log("Processing setupTimeline");
+      await setupTimelineAlarm(request.intervalMinutes);
+      return { success: true };
+
     case "archiveSessionManually":
       console.log(
         "Processing archiveSessionManually"
@@ -264,18 +269,22 @@ async function getProfileStorageKey() {
       "profileKey",
       "profileName"
     ]);
+
+  // Priority: 1. Explicit profileKey, 2. Slugified profileName, 3. Local clientId (fallback)
   const normalizedKey =
     slugifyProfileKey(profileKey) ||
-    slugifyProfileKey(profileName) ||
-    clientId;
+    slugifyProfileKey(profileName);
 
-  if (normalizedKey !== profileKey) {
+  // If we have a named profile, ensure it's synced.
+  if (normalizedKey && normalizedKey !== profileKey) {
     await chrome.storage.sync.set({
       profileKey: normalizedKey
     });
+    return normalizedKey;
   }
 
-  return normalizedKey;
+  // If no name is provided, use the LOCAL clientId and do NOT sync it.
+  return normalizedKey || clientId;
 }
 
 function encodeBase64Utf8(text) {
@@ -552,7 +561,8 @@ function buildSessionSummary(
 }
 
 function applyRetention(
-  sessionEntries
+  sessionEntries,
+  timelineRetentionDays = 2
 ) {
   const pinned = sessionEntries.filter(
     (session) => session.kind === "latest" || session.pinned
@@ -572,6 +582,22 @@ function applyRetention(
   );
 
   for (const session of sorted) {
+    if (session.kind === "timeline") {
+      const today = new Date();
+      const sessionDate = new Date(session.timestamp);
+      today.setHours(0,0,0,0);
+      sessionDate.setHours(0,0,0,0);
+      const diffTime = today - sessionDate;
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays < timelineRetentionDays) {
+        keptHistory.push(session);
+      } else {
+        pruned.push(session);
+      }
+      continue;
+    }
+
     const key =
       session.profileKey ||
       session.clientId ||
@@ -815,6 +841,9 @@ async function saveSessionToGitHub(
     const forceSnapshot = Boolean(
       options.forceSnapshot
     );
+    const isTimeline = Boolean(
+      options.isTimeline
+    );
     const friendlyName = options.friendlyName || null;
     const pinned = Boolean(options.pinned);
 
@@ -830,6 +859,7 @@ async function saveSessionToGitHub(
       clientId,
       friendlyName,
       pinned,
+      isTimeline,
       windows: windows
         .map((windowData) => ({
           id: windowData.id,
@@ -879,32 +909,39 @@ async function saveSessionToGitHub(
     }
 
     sessionData.signature = signature;
-    const historyPath = `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}.json`;
+    const historyPath = isTimeline 
+      ? `${SESSIONS_DIR}/${profileStorageKey}/history/timeline/session-${Date.now()}.json`
+      : `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}.json`;
 
     const latestSessionData = {
       ...sessionData,
+      isTimeline: undefined,
       friendlyName: null,
       pinned: false
     };
 
-    const latestResponse =
-      await putGitHubJson(
-      latestPath,
-      latestSessionData,
-      `Update latest session for ${alias}`,
-      latestFile.exists
-        ? latestFile.sha
-        : undefined
-      );
+    let latestSummary = null;
     const currentIndex =
       await loadSessionIndex();
-    const latestSummary =
-      buildSessionSummary(
-        latestSessionData,
+
+    if (!isTimeline) {
+      const latestResponse =
+        await putGitHubJson(
         latestPath,
-        latestResponse.content.sha,
-        "latest"
-      );
+        latestSessionData,
+        `Update latest session for ${alias}`,
+        latestFile.exists
+          ? latestFile.sha
+          : undefined
+        );
+      latestSummary =
+        buildSessionSummary(
+          latestSessionData,
+          latestPath,
+          latestResponse.content.sha,
+          "latest"
+        );
+    }
     const currentProfileHistory =
       currentIndex.sessions
         .filter(
@@ -924,12 +961,13 @@ async function saveSessionToGitHub(
     const isSameDay = 
       mostRecentUnpinnedSnapshot && 
       !forceSnapshot && 
+      !isTimeline &&
       isSameCalendarDay(
         mostRecentUnpinnedSnapshot.timestamp,
         sessionData.timestamp
       );
       
-    const shouldCreateNewSnapshot = !isSameDay;
+    const shouldCreateNewSnapshot = !isSameDay || forceSnapshot || isTimeline;
 
     let historySummary = null;
     let finalHistoryPath = historyPath;
@@ -939,7 +977,7 @@ async function saveSessionToGitHub(
         await putGitHubJson(
           historyPath,
           sessionData,
-          `Create daily snapshot for ${alias}`
+          isTimeline ? `Create timeline snapshot for ${alias}` : `Create daily snapshot for ${alias}`
         );
 
       historySummary =
@@ -947,7 +985,7 @@ async function saveSessionToGitHub(
           sessionData,
           historyPath,
           historyResponse.content.sha,
-          "history"
+          isTimeline ? "timeline" : "history"
         );
     } else {
       finalHistoryPath = mostRecentUnpinnedSnapshot.path;
@@ -974,15 +1012,16 @@ async function saveSessionToGitHub(
           session.path !== finalHistoryPath &&
           session.path !== latestPath
       );
-    const retained = applyRetention(
-      [
-        latestSummary,
-        ...(historySummary
-          ? [historySummary]
-          : []),
-        ...withoutDuplicatePath
-      ]
-    );
+    const oldLatest = currentIndex.sessions.find(s => s.profileKey === profileStorageKey && s.kind === "latest");
+    const summaryToKeep = latestSummary || oldLatest;
+
+    const { timelineRetention } = await chrome.storage.sync.get({ timelineRetention: 2 });
+
+    const retained = applyRetention([
+      ...(summaryToKeep ? [summaryToKeep] : []),
+      ...(historySummary ? [historySummary] : []),
+      ...withoutDuplicatePath
+    ], timelineRetention);
 
     await saveSessionIndex({
       sessions: retained.kept
@@ -1167,6 +1206,21 @@ async function setupSyncAlarm(
 }
 
 /**
+ * Setup periodic timeline using alarms
+ */
+async function setupTimelineAlarm(intervalMinutes) {
+  if (intervalMinutes > 0) {
+    await chrome.alarms.create("timelineSync", {
+      periodInMinutes: intervalMinutes
+    });
+    console.log(`Timeline alarm set to ${intervalMinutes} minutes`);
+  } else {
+    await chrome.alarms.clear("timelineSync");
+    console.log("Timeline alarm disabled");
+  }
+}
+
+/**
  * Alarm listener for periodic syncing
  */
 chrome.alarms.onAlarm.addListener(
@@ -1176,6 +1230,9 @@ chrome.alarms.onAlarm.addListener(
         "Running scheduled sync..."
       );
       await saveSessionToGitHub();
+    } else if (alarm.name === "timelineSync") {
+      console.log("Running scheduled timeline sync...");
+      await saveSessionToGitHub({ isTimeline: true });
     }
   }
 );

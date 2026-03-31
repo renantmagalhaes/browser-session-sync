@@ -292,7 +292,20 @@ function getFilteredSessions() {
 }
 
 function applyFilters() {
-  displaySessions(getFilteredSessions());
+  const filtered = getFilteredSessions();
+  const activeSessions = [];
+  const timelineSessions = [];
+  
+  for (const session of filtered) {
+    if (session.kind === "timeline") {
+      timelineSessions.push(session);
+    } else {
+      activeSessions.push(session);
+    }
+  }
+
+  displaySessions(activeSessions, "sessionsList");
+  displaySessions(timelineSessions, "timelineList");
 }
 
 /**
@@ -495,17 +508,23 @@ async function loadSessions() {
  * Display sessions with search filtering
  */
 function displaySessions(
-  sessionsToDisplay
+  sessionsToDisplay,
+  containerId = "sessionsList"
 ) {
   const sessionsList =
     document.getElementById(
-      "sessionsList"
+      containerId
     );
   sessionsList.innerHTML = "";
 
   if (sessionsToDisplay.length === 0) {
-    sessionsList.innerHTML =
-      '<p class="empty">No sessions match your search.</p>';
+    if (containerId === "timelineList") {
+      sessionsList.innerHTML =
+        '<p class="empty">No timeline snapshots recorded for today or yesterday.</p>';
+    } else {
+      sessionsList.innerHTML =
+        '<p class="empty">No sessions match your search.</p>';
+    }
     return;
   }
 
@@ -519,10 +538,35 @@ function displaySessions(
     );
   });
 
-  for (const session of sorted) {
-    const sessionEl =
-      createSessionElement(session);
-    sessionsList.appendChild(sessionEl);
+  // Function to get a localized date label for grouping.
+  const getGroupLabel = (timestamp) => {
+    const d = new Date(timestamp);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+
+    if (d.toDateString() === today.toDateString()) return "Today";
+    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+    return d.toLocaleDateString();
+  };
+
+  if (containerId === "timelineList") {
+    let currentGroup = "";
+    for (const session of sorted) {
+      const groupLabel = getGroupLabel(getSessionTimestamp(session));
+      if (groupLabel !== currentGroup) {
+        currentGroup = groupLabel;
+        const groupHeader = document.createElement("div");
+        groupHeader.className = "timeline-group-header";
+        groupHeader.textContent = currentGroup;
+        sessionsList.appendChild(groupHeader);
+      }
+      sessionsList.appendChild(createSessionElement(session));
+    }
+  } else {
+    for (const session of sorted) {
+      sessionsList.appendChild(createSessionElement(session));
+    }
   }
 }
 
@@ -557,9 +601,11 @@ function createSessionElement(session) {
   const kindLabel =
     isLatest
       ? "Current"
-      : isToday
-        ? "Today's Snapshot"
-        : "Snapshot";
+      : kind === "timeline"
+        ? "Timeline"
+        : isToday
+          ? "Today's Snapshot"
+          : "Snapshot";
   const isArchiveView =
     document.getElementById(
       "archiveSessionsSection"
@@ -1270,6 +1316,9 @@ function switchView(view) {
   const activeSection = document.getElementById(
     "activeSessionsSection"
   );
+  const timelineSection = document.getElementById(
+    "timelineSessionsSection"
+  );
   const archiveSection = document.getElementById(
     "archiveSessionsSection"
   );
@@ -1277,13 +1326,26 @@ function switchView(view) {
     ".search-section"
   );
 
+  document.querySelectorAll('.view-tab').forEach(tab => tab.classList.remove('active'));
+
   if (view === "archive") {
+    document.getElementById("tabArchive").classList.add("active");
     activeSection.style.display = "none";
+    timelineSection.style.display = "none";
     searchSection.style.display = "none";
     archiveSection.style.display = "flex";
     loadArchive("");
+  } else if (view === "timeline") {
+    document.getElementById("tabTimeline").classList.add("active");
+    activeSection.style.display = "none";
+    archiveSection.style.display = "none";
+    searchSection.style.display = "block";
+    timelineSection.style.display = "flex";
+    applyFilters();
   } else {
+    document.getElementById("tabActive").classList.add("active");
     activeSection.style.display = "flex";
+    timelineSection.style.display = "none";
     searchSection.style.display = "block";
     archiveSection.style.display = "none";
     loadSessions();
@@ -1410,14 +1472,19 @@ document
     toggleTheme
   );
 document
-  .getElementById("viewArchive")
-  .addEventListener("click", () =>
-    switchView("archive")
-  );
-document
-  .getElementById("backToActive")
+  .getElementById("tabActive")
   .addEventListener("click", () =>
     switchView("active")
+  );
+document
+  .getElementById("tabTimeline")
+  .addEventListener("click", () =>
+    switchView("timeline")
+  );
+document
+  .getElementById("tabArchive")
+  .addEventListener("click", () =>
+    switchView("archive")
   );
 document
   .getElementById("archiveSearchInput")

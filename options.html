@@ -170,6 +170,40 @@
           </div>
 
           <div class="form-group">
+            <label for="timelineInterval"
+              >Timeline Snapshot Interval
+              (minutes):</label
+            >
+            <input
+              type="number"
+              id="timelineInterval"
+              min="0"
+              max="1440"
+              value="60"
+            />
+            <small>
+              How often to record a separate Timeline snapshot. Set to 0 to disable. Recommended: 60 minutes.
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label for="timelineRetention"
+              >Timeline History Retention
+              (days):</label
+            >
+            <input
+              type="number"
+              id="timelineRetention"
+              min="1"
+              max="30"
+              value="2"
+            />
+            <small>
+              How many days to keep timeline hourly snapshots before auto-deleting.
+            </small>
+          </div>
+
+          <div class="form-group">
             <label>
               <input
                 type="checkbox"
@@ -178,6 +212,12 @@
               Exclude local tabs
               (localhost, file://)
             </label>
+          </div>
+
+          <div class="form-group info-box">
+             <small>
+              <strong>Note:</strong> Timeline snapshots are only created if your open tabs have changed since the last check to avoid redundant data.
+             </small>
           </div>
         </fieldset>
 

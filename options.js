@@ -37,6 +37,8 @@ async function loadSettings() {
       "profileName",
       "profileKey",
       "syncInterval",
+      "timelineInterval",
+      "timelineRetention",
       "excludeLocalTabs",
       "lastSyncTime"
     ]);
@@ -85,6 +87,20 @@ async function loadSettings() {
     document.getElementById(
       "syncInterval"
     ).value = settings.syncInterval;
+  }
+  if (
+    settings.timelineInterval !== undefined
+  ) {
+    document.getElementById(
+      "timelineInterval"
+    ).value = settings.timelineInterval;
+  }
+  if (
+    settings.timelineRetention !== undefined
+  ) {
+    document.getElementById(
+      "timelineRetention"
+    ).value = settings.timelineRetention;
   }
   if (settings.excludeLocalTabs) {
     document.getElementById(
@@ -170,6 +186,18 @@ async function saveSettings() {
       ).value,
       10
     ),
+    timelineInterval: parseInt(
+      document.getElementById(
+        "timelineInterval"
+      ).value,
+      10
+    ),
+    timelineRetention: parseInt(
+      document.getElementById(
+        "timelineRetention"
+      ).value,
+      10
+    ),
     excludeLocalTabs:
       document.getElementById(
         "excludeLocalTabs"
@@ -204,10 +232,39 @@ async function saveSettings() {
       });
     }
 
+    // Setup timeline alarm if interval is set
+    if (settings.timelineInterval > 0) {
+      await chrome.runtime.sendMessage({
+        action: "setupTimeline",
+        intervalMinutes:
+          settings.timelineInterval
+      });
+    } else {
+      await chrome.runtime.sendMessage({
+        action: "setupTimeline",
+        intervalMinutes: 0
+      });
+    }
+
     showMessage(
-      "✅ Settings saved successfully!",
+      "✅ Settings saved. Triggering initial sync...",
       "success"
     );
+
+    // Initial sync to GitHub
+    try {
+      const syncResponse = await chrome.runtime.sendMessage({
+        action: "saveSession"
+      });
+      if (syncResponse && syncResponse.success) {
+        showMessage("✅ Profile initialized on GitHub!", "success");
+      } else {
+        showMessage(`⚠️ Settings saved, but sync failed: ${syncResponse?.error || "Unknown error"}`, "error");
+      }
+    } catch (e) {
+      showMessage(`⚠️ Settings saved, but could not connect to background: ${e.message}`, "error");
+    }
+
     return true;
   } catch (error) {
     console.error(
