@@ -925,7 +925,7 @@ async function saveSessionToGitHub(
             )
             .map((tab) => ({
               title: tab.title,
-              url: tab.url,
+              url: tab.url || tab.pendingUrl || "",
               active: tab.active
             }))
         }))
@@ -949,20 +949,6 @@ async function saveSessionToGitHub(
     const hasChanged =
       latestSignature !== signature;
 
-    if (!hasChanged && !forceSnapshot) {
-      await chrome.storage.sync.set({
-        lastSyncTime:
-          new Date().toISOString(),
-        lastSyncStatus: "success"
-      });
-      return {
-        success: true,
-        skipped: true,
-        message:
-          "Session unchanged; latest state is already up to date."
-      };
-    }
-
     sessionData.signature = signature;
     const historyPath = isTimeline 
       ? `${SESSIONS_DIR}/${profileStorageKey}/history/timeline/session-${Date.now()}.json`
@@ -976,27 +962,37 @@ async function saveSessionToGitHub(
     };
 
     let latestSummary = null;
-    const currentIndex =
-      await loadSessionIndex();
 
-    if (!isTimeline) {
-      const latestResponse =
-        await putGitHubJson(
+    // 1. Collaborative Skip Detection:
+    // If global state matches (nothing changed since last sync) AND this is a Timeline sync,
+    // we can skip the entire process because the timeline already has this state.
+    if (!hasChanged && isTimeline && !forceSnapshot) {
+      await chrome.storage.sync.set({
+        lastSyncTime: new Date().toISOString(),
+        lastSyncStatus: "success"
+      });
+      return { success: true, skipped: true, message: "Timeline is already up to date." };
+    }
+
+    // 2. Global Baseline Update:
+    // Update latest.json ONLY if there's a global change.
+    if (hasChanged || forceSnapshot) {
+      const latestResponse = await putGitHubJson(
         latestPath,
         latestSessionData,
-        `Update latest session for ${alias}`,
-        latestFile.exists
-          ? latestFile.sha
-          : undefined
-        );
-      latestSummary =
-        buildSessionSummary(
-          latestSessionData,
-          latestPath,
-          latestResponse.content.sha,
-          "latest"
-        );
+        isTimeline ? `Update baseline (Timeline pulse) for ${alias}` : `Update latest session for ${alias}`,
+        latestFile.exists ? latestFile.sha : undefined
+      );
+
+      latestSummary = buildSessionSummary(
+        latestSessionData,
+        latestPath,
+        latestResponse.content.sha,
+        "latest"
+      );
     }
+
+    const currentIndex = await loadSessionIndex();
     const currentProfileHistory =
       currentIndex.sessions
         .filter(
@@ -1013,6 +1009,9 @@ async function saveSessionToGitHub(
     const mostRecentUnpinnedSnapshot =
       currentProfileHistory.find(s => !s.pinned && !s.friendlyName);
 
+    const mostRecentDailySignature = mostRecentUnpinnedSnapshot?.signature || null;
+    const dailyNeedsUpdate = signature !== mostRecentDailySignature;
+
     const isSameDay = 
       mostRecentUnpinnedSnapshot && 
       !forceSnapshot && 
@@ -1022,50 +1021,82 @@ async function saveSessionToGitHub(
         sessionData.timestamp
       );
       
-    const shouldCreateNewSnapshot = !isSameDay || forceSnapshot || isTimeline;
+    // Dual Save Logic:
+    // 1. If global state changed (or forced), we ALWAYS create a Timeline pulse.
+    const createTimelinePulse = hasChanged || forceSnapshot;
+
+    // 2. If it's a Normal Sync, we update/create the History entry if current state is missing from history.
+    const updateDailyHistory = !isTimeline && (dailyNeedsUpdate || forceSnapshot);
 
     let historySummary = null;
-    let finalHistoryPath = historyPath;
+    let timelineSummary = null;
 
-    if (shouldCreateNewSnapshot) {
-      const historyResponse =
+    // A. Handle Timeline/Pulse creation
+    if (createTimelinePulse) {
+      const timelinePath = `${SESSIONS_DIR}/${profileStorageKey}/history/timeline/session-${Date.now()}.json`;
+      const timelineResponse =
         await putGitHubJson(
-          historyPath,
+          timelinePath,
           sessionData,
-          isTimeline ? `Create timeline snapshot for ${alias}` : `Create daily snapshot for ${alias}`
+          `Create timeline pulse for ${alias}`
         );
 
-      historySummary =
+      timelineSummary =
         buildSessionSummary(
           sessionData,
-          historyPath,
-          historyResponse.content.sha,
-          isTimeline ? "timeline" : "history"
-        );
-    } else {
-      finalHistoryPath = mostRecentUnpinnedSnapshot.path;
-      const historyResponse =
-        await putGitHubJson(
-          finalHistoryPath,
-          sessionData,
-          `Update daily snapshot for ${alias}`,
-          mostRecentUnpinnedSnapshot.sha
-        );
-
-      historySummary =
-        buildSessionSummary(
-          sessionData,
-          finalHistoryPath,
-          historyResponse.content.sha,
-          "history"
+          timelinePath,
+          timelineResponse.content.sha,
+          "timeline"
         );
     }
+
+    // B. Handle Daily History creation/update
+    let finalHistoryPath = historyPath;
+    if (updateDailyHistory) {
+      if (!isSameDay || forceSnapshot) {
+        // Create new daily snapshot if today is new
+        const historyResponse =
+          await putGitHubJson(
+            historyPath,
+            sessionData,
+            `Create daily snapshot for ${alias}`
+          );
+
+        historySummary =
+          buildSessionSummary(
+            sessionData,
+            historyPath,
+            historyResponse.content.sha,
+            "history"
+          );
+      } else {
+        // Update today's existing snapshot
+        finalHistoryPath = mostRecentUnpinnedSnapshot.path;
+        const historyResponse =
+          await putGitHubJson(
+            finalHistoryPath,
+            sessionData,
+            `Update daily snapshot for ${alias}`,
+            mostRecentUnpinnedSnapshot.sha
+          );
+
+        historySummary =
+          buildSessionSummary(
+            sessionData,
+            finalHistoryPath,
+            historyResponse.content.sha,
+            "history"
+          );
+      }
+    }
+
 
     const withoutDuplicatePath =
       currentIndex.sessions.filter(
         (session) =>
           session.path !== finalHistoryPath &&
-          session.path !== latestPath
+          session.path !== latestPath &&
+          (!timelineSummary || session.path !== timelineSummary.path)
       );
     const oldLatest = currentIndex.sessions.find(s => s.profileKey === profileStorageKey && s.kind === "latest");
     const summaryToKeep = latestSummary || oldLatest;
@@ -1075,6 +1106,7 @@ async function saveSessionToGitHub(
     const retained = applyRetention([
       ...(summaryToKeep ? [summaryToKeep] : []),
       ...(historySummary ? [historySummary] : []),
+      ...(timelineSummary ? [timelineSummary] : []),
       ...withoutDuplicatePath
     ], timelineRetention);
 
@@ -1106,17 +1138,19 @@ async function saveSessionToGitHub(
     );
     return {
       success: true,
-      filePath: shouldCreateNewSnapshot
+      filePath: updateDailyHistory
         ? finalHistoryPath
         : latestPath,
       latestPath,
       snapshotCreated:
-        shouldCreateNewSnapshot,
+        createTimelinePulse || updateDailyHistory,
       snapshotReason: forceSnapshot
         ? "manual"
-        : shouldCreateNewSnapshot
+        : updateDailyHistory
           ? "daily"
-          : "update"
+          : createTimelinePulse
+            ? "pulse"
+            : "update"
     };
   } catch (error) {
     console.error(
