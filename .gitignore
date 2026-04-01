@@ -43,3 +43,14 @@ Thumbs.db
 # Extension package files
 *.crx
 *.pem
+
+# WebView specific
+WebView/data/
+WebView/.env
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+ENV/

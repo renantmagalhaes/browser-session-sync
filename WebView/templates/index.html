@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser Session Sync - Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body class="dashboard-active">
+    <header>
+        <div class="header-left">
+            <span class="logo">Sync Codex</span>
+            <nav>
+                <button class="nav-btn active" data-view="timeline">Timeline</button>
+                <button class="nav-btn" data-view="graph">Graph Explorer</button>
+            </nav>
+        </div>
+        <div class="header-right">
+            <div class="view-switcher" id="timelineControls">
+                <button class="view-btn active" data-style="list">List</button>
+                <button class="view-btn" data-style="grid">Grid</button>
+                <button class="view-btn" data-style="compact">Compact</button>
+            </div>
+            <button id="syncBtn" class="primary-btn">Sync from GitHub</button>
+            <a href="/logout" class="logout-btn">Logout</a>
+        </div>
+    </header>
+
+    <main>
+        <div id="timelineView" class="view-container active">
+            <div id="timelineList" class="timeline-container list-view">
+                <!-- Sessions will be injected here -->
+                <div class="loading-shimmer">
+                    <div class="shimmer-card"></div>
+                    <div class="shimmer-card"></div>
+                    <div class="shimmer-card"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="graphView" class="view-container">
+            <div class="graph-header">
+                <h2>Relationship Graph</h2>
+                <p>Obsidian-style visualization of domain correlations across sessions.</p>
+            </div>
+            <div id="graphContainer"></div>
+        </div>
+    </main>
+
+    <!-- Modal for session details -->
+    <div id="sessionModal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

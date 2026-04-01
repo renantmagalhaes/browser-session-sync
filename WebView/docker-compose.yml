@@ -1,0 +1,16 @@
+services:
+  webview:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    # Use these environment variables to override the internal defaults
+    environment:
+      # - GITHUB_USERNAME=your_username
+      # - GITHUB_TOKEN=your_token
+      # - GITHUB_REPO=your_repo
+      # - WEBVIEW_PASSWORD=your_dashboard_password
+      - DATA_DB_PATH=/data/cache.db
+      - SESSION_CACHE_DIR=/data/sessions
+    restart: unless-stopped
