@@ -1029,8 +1029,9 @@ async function saveSessionToGitHub(
     // 1. Only create a Timeline pulse when explicitly triggered (timeline alarm or forced manual snapshot).
     const createTimelinePulse = isTimeline || forceSnapshot;
 
-    // 2. If it's a Normal Sync, we update/create the History entry if current state is missing from history.
-    const updateDailyHistory = !isTimeline && (dailyNeedsUpdate || forceSnapshot);
+    // 2. We update/create the History entry if current state is missing from history.
+    // We allow timeline pulses to keep the "Daily Rolling Snapshot" updated.
+    const updateDailyHistory = dailyNeedsUpdate || forceSnapshot;
 
     let historySummary = null;
     let timelineSummary = null;

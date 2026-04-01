@@ -281,6 +281,7 @@ function getFilteredSessions() {
       const isToday = date.toDateString() === new Date().toDateString();
       const isRollingSnapshot = !session.pinned && !session.friendlyName;
       if (isToday && isRollingSnapshot) {
+        // Today's rolling daily history is hidden in favor of the "Current State" at the top.
         return false;
       }
     }
