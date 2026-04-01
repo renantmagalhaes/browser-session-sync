@@ -963,35 +963,6 @@ async function saveSessionToGitHub(
 
     let latestSummary = null;
 
-    // 1. Collaborative Skip Detection:
-    // If global state matches (nothing changed since last sync) AND this is a Timeline sync,
-    // we can skip the entire process because the timeline already has this state.
-    if (!hasChanged && isTimeline && !forceSnapshot) {
-      await chrome.storage.sync.set({
-        lastSyncTime: new Date().toISOString(),
-        lastSyncStatus: "success"
-      });
-      return { success: true, skipped: true, message: "Timeline is already up to date." };
-    }
-
-    // 2. Global Baseline Update:
-    // Update latest.json ONLY if there's a global change.
-    if (hasChanged || forceSnapshot) {
-      const latestResponse = await putGitHubJson(
-        latestPath,
-        latestSessionData,
-        isTimeline ? `Update baseline (Timeline pulse) for ${alias}` : `Update latest session for ${alias}`,
-        latestFile.exists ? latestFile.sha : undefined
-      );
-
-      latestSummary = buildSessionSummary(
-        latestSessionData,
-        latestPath,
-        latestResponse.content.sha,
-        "latest"
-      );
-    }
-
     const currentIndex = await loadSessionIndex();
     const currentProfileHistory =
       currentIndex.sessions
@@ -1012,18 +983,51 @@ async function saveSessionToGitHub(
     const mostRecentDailySignature = mostRecentUnpinnedSnapshot?.signature || null;
     const dailyNeedsUpdate = signature !== mostRecentDailySignature;
 
-    const isSameDay = 
-      mostRecentUnpinnedSnapshot && 
-      !forceSnapshot && 
+    const isSameDay =
+      mostRecentUnpinnedSnapshot &&
+      !forceSnapshot &&
       !isTimeline &&
       isSameCalendarDay(
         mostRecentUnpinnedSnapshot.timestamp,
         sessionData.timestamp
       );
-      
+
+    // 1. Timeline Skip Detection:
+    // Compare against the last timeline entry — not latest.json, which is updated by every regular sync.
+    if (isTimeline && !forceSnapshot) {
+      const lastTimelineSignature = currentIndex.sessions
+        .filter(s => s.profileKey === profileStorageKey && s.kind === "timeline")
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]?.signature || null;
+      if (signature === lastTimelineSignature) {
+        await chrome.storage.sync.set({
+          lastSyncTime: new Date().toISOString(),
+          lastSyncStatus: "success"
+        });
+        return { success: true, skipped: true, message: "Timeline is already up to date." };
+      }
+    }
+
+    // 2. Global Baseline Update:
+    // Update latest.json ONLY if there's a global change.
+    if (hasChanged || forceSnapshot) {
+      const latestResponse = await putGitHubJson(
+        latestPath,
+        latestSessionData,
+        isTimeline ? `Update baseline (Timeline pulse) for ${alias}` : `Update latest session for ${alias}`,
+        latestFile.exists ? latestFile.sha : undefined
+      );
+
+      latestSummary = buildSessionSummary(
+        latestSessionData,
+        latestPath,
+        latestResponse.content.sha,
+        "latest"
+      );
+    }
+
     // Dual Save Logic:
-    // 1. If global state changed (or forced), we ALWAYS create a Timeline pulse.
-    const createTimelinePulse = hasChanged || forceSnapshot;
+    // 1. Only create a Timeline pulse when explicitly triggered (timeline alarm or forced manual snapshot).
+    const createTimelinePulse = isTimeline || forceSnapshot;
 
     // 2. If it's a Normal Sync, we update/create the History entry if current state is missing from history.
     const updateDailyHistory = !isTimeline && (dailyNeedsUpdate || forceSnapshot);
