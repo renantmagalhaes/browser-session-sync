@@ -11,13 +11,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const modal = document.getElementById('sessionModal');
     const modalBody = document.getElementById('modalBody');
     const closeModal = document.querySelector('.close-modal');
+    const searchInput = document.getElementById('searchInput');
+    const profileDropdown = document.getElementById('profileDropdown');
+    const searchCount = document.getElementById('searchCount');
+
+    let activeProfile = 'all';
+    let searchQuery = '';
 
     // Init
     init();
 
     async function init() {
         setupEventListeners();
-        await loadSessions();
+        await Promise.all([loadSessions(), loadProfiles()]);
         renderTimeline();
     }
 
@@ -34,6 +40,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 if (currentView === 'graph') {
                     renderGraph();
+                } else if (currentView === 'settings') {
+                    loadSettings();
                 }
             });
         });
@@ -53,21 +61,37 @@ document.addEventListener('DOMContentLoaded', () => {
         // Sync Trigger
         syncBtn.addEventListener('click', async () => {
             syncBtn.disabled = true;
+            syncBtn.classList.add('loading');
             syncBtn.textContent = 'Syncing...';
             try {
                 const response = await fetch('/api/sync');
                 const data = await response.json();
                 if (data.status === 'success') {
-                    await loadSessions();
+                    await Promise.all([loadSessions(), loadProfiles()]);
                     renderTimeline();
-                    alert(`Sync complete! Loaded ${data.count} sessions.`);
+                    // Subtle notification instead of alert
+                    statusToast(`Synced ${data.count} sessions`);
                 }
             } catch (error) {
                 console.error('Sync failed:', error);
+                statusToast('Sync failed', 'error');
             } finally {
                 syncBtn.disabled = false;
+                syncBtn.classList.remove('loading');
                 syncBtn.textContent = 'Sync from GitHub';
             }
+        });
+
+        // Search Input
+        searchInput.addEventListener('input', (e) => {
+            searchQuery = e.target.value.toLowerCase();
+            renderTimeline();
+        });
+
+        // Profile Selection dropdown
+        profileDropdown.addEventListener('change', (e) => {
+            activeProfile = e.target.value;
+            renderTimeline();
         });
 
         // Modal close
@@ -84,71 +108,115 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function loadProfiles() {
+        try {
+            const response = await fetch('/api/profiles');
+            const profiles = await response.json();
+            
+            profileDropdown.innerHTML = '<option value="all">All Profiles</option>' + 
+                profiles.map(p => `<option value="${p}">${p}</option>`).join('');
+            
+            profileDropdown.value = activeProfile;
+        } catch (error) {
+            console.error('Failed to load profiles:', error);
+        }
+    }
+
+    function statusToast(msg, type = 'success') {
+        const toast = document.createElement('div');
+        toast.className = `status-toast ${type}`;
+        toast.textContent = msg;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    }
+
     function renderTimeline() {
         timelineList.className = `timeline-container ${currentStyle}-view`;
         timelineList.innerHTML = '';
 
-        if (sessions.length === 0) {
-            timelineList.innerHTML = '<div class="no-data">No sessions found. Sync from GitHub to begin.</div>';
+        const filtered = sessions.filter(s => {
+            const matchesProfile = activeProfile === 'all' || s.browser_alias === activeProfile;
+            const matchesSearch = !searchQuery || s.search_text?.toLowerCase().includes(searchQuery);
+            return matchesProfile && matchesSearch;
+        });
+
+        searchCount.textContent = searchQuery || activeProfile !== 'all' ? `${filtered.length} matches` : '';
+
+        if (filtered.length === 0) {
+            timelineList.innerHTML = '<div class="no-data">No sessions match your filters.</div>';
             return;
         }
 
-        sessions.forEach(session => {
+        filtered.forEach((session, index) => {
             const card = document.createElement('div');
-            card.className = 'session-card';
+            card.className = `session-card ${session.is_pinned ? 'pinned' : ''}`;
+            card.style.animationDelay = `${index * 0.05}s`;
             
-            const content = JSON.parse(session.content);
             const date = new Date(session.timestamp).toLocaleString();
             const tabCount = session.tab_count || 0;
             const kindClass = `kind-${session.kind.toLowerCase()}`;
             
-            // Get first 3 tabs for preview
-            const allTabs = content.windows.flatMap(w => w.tabs);
-            const previewTabs = allTabs.slice(0, 3).map(t => `<span class="tab-badge">${t.title}</span>`).join('');
+            // Use metadata from DB
+            const previewData = JSON.parse(session.preview_tabs || '[]');
+            const previewHtml = previewData.map(t => `<span class="tab-badge">${t.title}</span>`).join('');
+            
+            const title = session.friendly_name || 
+                        (session.kind === 'timeline' ? 'Timeline Update' : 'Session Backup');
 
             card.innerHTML = `
                 <div class="session-info">
                     <div class="session-meta">
                         <span class="kind-pill ${kindClass}">${session.kind}</span>
+                        ${session.is_pinned ? '<span class="pin-icon">📌</span>' : ''}
                         <span>${date}</span>
-                        <span>${session.browser_alias || 'Unknown Browser'}</span>
+                        <span>${session.browser_alias || 'Default Browser'}</span>
                         <span>${tabCount} tabs</span>
                     </div>
-                    <div class="session-title">${content.friendlyName || 'Session Backup'}</div>
-                    <div class="tab-badges">${previewTabs} ${allTabs.length > 3 ? '<span class="tab-badge">...</span>' : ''}</div>
+                    <div class="session-title">${title}</div>
+                    <div class="tab-badges">${previewHtml} ${tabCount > previewData.length ? '<span class="tab-badge">...</span>' : ''}</div>
                 </div>
             `;
 
-            card.addEventListener('click', () => showSessionDetails(content));
+            card.addEventListener('click', () => showSessionDetails(session));
             timelineList.appendChild(card);
         });
     }
 
-    function showSessionDetails(session) {
-        modalBody.innerHTML = `
-            <div class="modal-header">
-                <h2>${session.friendlyName || 'Browsing Session'}</h2>
-                <p>${new Date(session.timestamp).toLocaleString()} • ${session.browserAlias}</p>
-            </div>
-            <div class="modal-tabs-list">
-                ${session.windows.map((win, idx) => `
-                    <div class="window-group">
-                        <h3>Window ${idx + 1} (${win.tabs.length} tabs)</h3>
-                        <ul class="tabs-list">
-                            ${win.tabs.map(tab => `
-                                <li>
-                                    <a href="${tab.url}" target="_blank">
-                                        <span class="tab-title">${tab.title}</span>
-                                        <span class="tab-url">${tab.url}</span>
-                                    </a>
-                                </li>
-                            `).join('')}
-                        </ul>
-                    </div>
-                `).join('')}
-            </div>
-        `;
+    async function showSessionDetails(sessionSummary) {
+        // Show loading state in modal
+        modalBody.innerHTML = '<div class="loading-shimmer-modal"></div>';
         modal.style.display = 'block';
+
+        try {
+            const response = await fetch(`/api/session/details?path=${encodeURIComponent(sessionSummary.path)}`);
+            const session = await response.json();
+            
+            modalBody.innerHTML = `
+                <div class="modal-header">
+                    <h2>${session.friendlyName || 'Browsing Session'}</h2>
+                    <p>${new Date(session.timestamp).toLocaleString()} • ${session.browserAlias}</p>
+                </div>
+                <div class="modal-tabs-list">
+                    ${session.windows.map((win, idx) => `
+                        <div class="window-group">
+                            <h3 class="window-title">Window ${idx + 1} <span>${win.tabs.length} tabs</span></h3>
+                            <ul class="tabs-list">
+                                ${win.tabs.map(tab => `
+                                    <li>
+                                        <a href="${tab.url}" target="_blank">
+                                            <span class="tab-title">${tab.title}</span>
+                                            <span class="tab-url">${tab.url}</span>
+                                        </a>
+                                    </li>
+                                `).join('')}
+                            </ul>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        } catch (error) {
+            modalBody.innerHTML = '<div class="error-msg">Failed to load session details.</div>';
+        }
     }
 
     async function renderGraph() {
@@ -246,4 +314,54 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('Graph build failed:', error);
         }
     }
+
+    async function loadSettings() {
+        const status = document.getElementById('settingsStatus');
+        try {
+            const response = await fetch('/api/settings');
+            const data = await response.json();
+            
+            document.getElementById('setting_username').value = data.GITHUB_USERNAME || '';
+            document.getElementById('setting_repo').value = data.GITHUB_REPO || '';
+            document.getElementById('setting_token').placeholder = data.HAS_TOKEN ? '•••••••• (Token saved)' : 'Enter GitHub Token';
+        } catch (error) {
+            console.error('Failed to load settings:', error);
+        }
+    }
+
+    document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const status = document.getElementById('settingsStatus');
+        status.textContent = 'Saving...';
+        status.className = 'status-msg';
+
+        const payload = {
+            GITHUB_USERNAME: document.getElementById('setting_username').value,
+            GITHUB_REPO: document.getElementById('setting_repo').value,
+            GITHUB_TOKEN: document.getElementById('setting_token').value,
+            WEBVIEW_PASSWORD: document.getElementById('setting_password').value
+        };
+
+        try {
+            const response = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            if (response.ok) {
+                status.textContent = 'Settings saved successfully!';
+                status.classList.add('success');
+                document.getElementById('setting_token').value = '';
+                document.getElementById('setting_password').value = '';
+                await loadSettings();
+            } else {
+                status.textContent = 'Failed to save settings.';
+                status.classList.add('error');
+            }
+        } catch (error) {
+            status.textContent = 'Error saving settings.';
+            status.classList.add('error');
+        }
+    });
 });

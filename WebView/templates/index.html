@@ -14,7 +14,8 @@
             <span class="logo">Sync Codex</span>
             <nav>
                 <button class="nav-btn active" data-view="timeline">Timeline</button>
-                <button class="nav-btn" data-view="graph">Graph Explorer</button>
+                <button class="nav-btn" data-view="graph">Explorer</button>
+                <button class="nav-btn" data-view="settings">Settings</button>
             </nav>
         </div>
         <div class="header-right">
@@ -29,6 +30,22 @@
     </header>
 
     <main>
+        <div class="toolbar">
+            <div class="search-box">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                <input type="text" id="searchInput" placeholder="Search tabs, titles, or profiles...">
+                <span id="searchCount" class="search-count"></span>
+            </div>
+            <div class="filter-group">
+                <label for="profileDropdown" class="filter-label">Profile:</label>
+                <div class="select-wrapper">
+                    <select id="profileDropdown" class="profile-select">
+                        <option value="all">All Profiles</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
         <div id="timelineView" class="view-container active">
             <div id="timelineList" class="timeline-container list-view">
                 <!-- Sessions will be injected here -->
@@ -46,6 +63,45 @@
                 <p>Obsidian-style visualization of domain correlations across sessions.</p>
             </div>
             <div id="graphContainer"></div>
+        </div>
+
+        <div id="settingsView" class="view-container">
+            <div class="settings-header">
+                <h2>Configuration</h2>
+                <p>Manage your GitHub credentials and dashboard settings.</p>
+            </div>
+            <div class="settings-card">
+                <form id="settingsForm">
+                    <div class="form-section">
+                        <h3>GitHub Integration</h3>
+                        <div class="input-group">
+                            <label>GitHub Username</label>
+                            <input type="text" id="setting_username" placeholder="e.g. janesmith">
+                        </div>
+                        <div class="input-group">
+                            <label>Repository Name</label>
+                            <input type="text" id="setting_repo" placeholder="e.g. my-sessions">
+                        </div>
+                        <div class="input-group">
+                            <label>Personal Access Token (PAT)</label>
+                            <input type="password" id="setting_token" placeholder="Leave empty to keep current">
+                        </div>
+                    </div>
+                    
+                    <div class="form-section">
+                        <h3>Dashboard Security</h3>
+                        <div class="input-group">
+                            <label>New Dashboard Password</label>
+                            <input type="password" id="setting_password" placeholder="Leave empty to keep current">
+                        </div>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="submit" class="primary-btn">Save Configuration</button>
+                        <span id="settingsStatus" class="status-msg"></span>
+                    </div>
+                </form>
+            </div>
         </div>
     </main>
 
