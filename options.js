@@ -5,6 +5,19 @@
 const FORM_ID = "settingsForm";
 const MESSAGE_ID = "message";
 
+function formatDate(date, fmt) {
+  const d = String(date.getDate()).padStart(2, '0');
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const y = date.getFullYear();
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  const time = `${hh}:${mm}:${ss}`;
+  if (fmt === 'mdy') return `${m}/${d}/${y}, ${time}`;
+  if (fmt === 'ymd') return `${y}-${m}-${d}, ${time}`;
+  return `${d}/${m}/${y}, ${time}`;
+}
+
 async function applyStoredTheme() {
   const { themePreference } =
     await chrome.storage.sync.get(
@@ -40,7 +53,8 @@ async function loadSettings() {
       "timelineInterval",
       "timelineRetention",
       "excludeLocalTabs",
-      "lastSyncTime"
+      "lastSyncTime",
+      "dateFormat"
     ]);
 
   const local =
@@ -108,6 +122,8 @@ async function loadSettings() {
     ).checked =
       settings.excludeLocalTabs;
   }
+  document.getElementById("dateFormat").value =
+    settings.dateFormat || 'dmy';
   if (local.clientId) {
     document.getElementById(
       "clientId"
@@ -128,7 +144,7 @@ async function loadSettings() {
     document.getElementById(
       "lastSyncDisplay"
     ).textContent =
-      `Last sync: ${syncDate.toLocaleString()}`;
+      `Last sync: ${formatDate(syncDate, settings.dateFormat || 'dmy')}`;
   } else {
     document.getElementById(
       "lastSyncDisplay"
@@ -201,7 +217,9 @@ async function saveSettings() {
     excludeLocalTabs:
       document.getElementById(
         "excludeLocalTabs"
-      ).checked
+      ).checked,
+    dateFormat:
+      document.getElementById("dateFormat").value
   };
 
   if (!settings.profileKey) {

@@ -6,6 +6,32 @@ let allSessions = [];
 let selectedProfileKey = "__all__";
 let currentProfileKey = null;
 let currentTheme = "dark";
+let dateFormat = 'dmy';
+
+function formatDate(date) {
+  const d = String(date.getDate()).padStart(2, '0');
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const y = date.getFullYear();
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  const time = `${hh}:${mm}:${ss}`;
+  if (dateFormat === 'mdy') return `${m}/${d}/${y}, ${time}`;
+  if (dateFormat === 'ymd') return `${y}-${m}-${d}, ${time}`;
+  return `${d}/${m}/${y}, ${time}`;
+}
+
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+function formatLongDate(date) {
+  const day = date.getDate();
+  const y = date.getFullYear();
+  const monthName = MONTH_NAMES[date.getMonth()];
+  if (dateFormat === 'mdy') return `${monthName} ${day}, ${y}`;
+  if (dateFormat === 'ymd') return `${y}, ${monthName} ${day}`;
+  return `${day} ${monthName} ${y}`;
+}
 const sessionDetailsCache = new Map();
 
 function applyTheme(theme) {
@@ -446,7 +472,7 @@ async function updateStatus() {
       const syncDate = new Date(
         response.lastSyncTime
       );
-      lastSyncEl.textContent = `Last sync: ${syncDate.toLocaleString()}`;
+      lastSyncEl.textContent = `Last sync: ${formatDate(syncDate)}`;
     }
   } catch (error) {
     console.error(
@@ -553,12 +579,12 @@ function displaySessions(
     
     // Within the last week (7 days), show the day name + relative days ago
     if (dayDiff < 7) {
-      const dayName = d.toLocaleDateString(undefined, { weekday: "long" });
+      const dayName = DAY_NAMES[d.getDay()];
       return `${dayName} (${dayDiff} days ago)`;
     }
-    
+
     // Older than a week, show the full date + relative days ago
-    const fullDate = d.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+    const fullDate = formatLongDate(d);
     return `${fullDate} (${dayDiff} days ago)`;
   };
 
@@ -637,7 +663,7 @@ function createSessionElement(session) {
     <strong>${titlePrefix}${displayTitle}</strong>
     ${subText}
     <span class="session-kind ${kind === "latest" ? "current" : "snapshot"}">${escapeHtml(kindLabel)}</span>
-    <span class="session-date">${date.toLocaleString()}</span>
+    <span class="session-date">${formatDate(date)}</span>
   `;
 
   const statsEl =
@@ -1507,6 +1533,8 @@ document
 // Initialize on popup open
 (async () => {
   await loadThemePreference();
+  const { dateFormat: fmt } = await chrome.storage.sync.get('dateFormat');
+  dateFormat = fmt || 'dmy';
   currentProfileKey =
     await getCurrentProfileKey();
   selectedProfileKey =
