@@ -1313,19 +1313,32 @@ async function setupTimelineAlarm(intervalMinutes) {
   }
 }
 
+function isTransientError(result) {
+  if (!result || result.success) return false;
+  return /40[78]|429|5\d\d/.test(result.error || "");
+}
+
 /**
  * Alarm listener for periodic syncing
  */
 chrome.alarms.onAlarm.addListener(
   async (alarm) => {
-    if (alarm.name === "sessionSync") {
-      console.log(
-        "Running scheduled sync..."
-      );
-      await saveSessionToGitHub();
-    } else if (alarm.name === "timelineSync") {
-      console.log("Running scheduled timeline sync...");
-      await saveSessionToGitHub({ isTimeline: true });
+    const options =
+      alarm.name === "timelineSync"
+        ? { isTimeline: true }
+        : alarm.name === "sessionSync"
+          ? {}
+          : null;
+
+    if (options === null) return;
+
+    console.log(`Running scheduled ${alarm.name}...`);
+    let result = await saveSessionToGitHub(options);
+
+    for (let attempt = 1; attempt <= 3 && isTransientError(result); attempt++) {
+      console.warn(`Transient error on ${alarm.name}, retry ${attempt}/3 in 10s...`);
+      await sleep(10000);
+      result = await saveSessionToGitHub(options);
     }
   }
 );
