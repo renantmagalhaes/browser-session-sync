@@ -592,6 +592,7 @@ function buildSessionSummary(
     sha,
     kind,
     timestamp: sessionData.timestamp,
+    signature: sessionData.signature || null,
     browserAlias:
       sessionData.browserAlias,
     profileKey:
@@ -838,8 +839,7 @@ async function computeSessionSignature(
     (windowData) =>
       windowData.tabs.map((tab) => ({
         title: tab.title || "",
-        url: tab.url || "",
-        active: Boolean(tab.active)
+        url: tab.url || ""
       }))
   );
 
@@ -950,9 +950,7 @@ async function saveSessionToGitHub(
       latestSignature !== signature;
 
     sessionData.signature = signature;
-    const historyPath = isTimeline 
-      ? `${SESSIONS_DIR}/${profileStorageKey}/history/timeline/session-${Date.now()}.json`
-      : `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}.json`;
+    const historyPath = `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}.json`;
 
     const latestSessionData = {
       ...sessionData,
@@ -1029,9 +1027,9 @@ async function saveSessionToGitHub(
     // 1. Only create a Timeline pulse when explicitly triggered (timeline alarm or forced manual snapshot).
     const createTimelinePulse = isTimeline || forceSnapshot;
 
-    // 2. We update/create the History entry if current state is missing from history.
-    // We allow timeline pulses to keep the "Daily Rolling Snapshot" updated.
-    const updateDailyHistory = dailyNeedsUpdate || forceSnapshot;
+    // 2. We update/create the History entry only during regular sync or forced manual snapshots.
+    // Timeline pulses must never create/update daily history entries.
+    const updateDailyHistory = !isTimeline && (dailyNeedsUpdate || forceSnapshot);
 
     let historySummary = null;
     let timelineSummary = null;
