@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Session Sync",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "description": "Save and restore your browser sessions to GitHub",
   "permissions": [
     "storage",
@@ -26,4 +26,3 @@
     "128": "assets/icons/icon-128.png"
   }
 }
-

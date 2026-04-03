@@ -813,34 +813,79 @@ async function loadSessionIndex() {
   return rebuiltIndex;
 }
 
-async function saveSessionIndex(indexData) {
-  const currentIndex =
-    await fetchGitHubJson(INDEX_PATH);
+/**
+ * Atomic update to INDEX_PATH to prevent race conditions from overlapping syncs.
+ * Fetches latest index, merges new entries, applies retention, and pushes back.
+ */
+async function updateIndexWithNewSessions(newSummaries) {
+  const { timelineRetention } = await chrome.storage.sync.get({ timelineRetention: 2 });
+  
+  // 1. Fetch the MOST RECENT index from GitHub right now.
+  const indexFile = await fetchGitHubJson(INDEX_PATH);
+  const normalized = indexFile.exists ? normalizeIndex(indexFile.data) : { sessions: [] };
+  
+  // 2. Identify and filter out any existing sessions that share the same path as our new ones.
+  const newPaths = new Set(newSummaries.map(s => s.path));
+  const withoutDuplicates = normalized.sessions.filter(s => !newPaths.has(s.path));
+  
+  // 3. Merge new ones in.
+  const merged = [
+    ...newSummaries,
+    ...withoutDuplicates
+  ];
+  
+  // 4. Apply retention logic to the merged result.
+  const { kept, pruned } = applyRetention(merged, timelineRetention);
+  
+  // 5. Save the final "kept" list back to GitHub.
   const nextIndex = normalizeIndex({
-    ...indexData,
-    updatedAt:
-      new Date().toISOString()
+    sessions: kept,
+    updatedAt: new Date().toISOString()
   });
 
   await putGitHubJson(
     INDEX_PATH,
     nextIndex,
-    "Update session index",
-    currentIndex.exists
-      ? currentIndex.sha
-      : undefined
+    "Update session index (Atomic merge)",
+    indexFile.exists ? indexFile.sha : undefined
   );
+
+  // 6. Archive pruned sessions.
+  for (const staleSession of pruned) {
+    try {
+      await archiveSession(staleSession);
+    } catch (error) {
+       console.warn("Failed to archive old session during atomic merge:", staleSession.path, error);
+    }
+  }
+
+  return { kept, pruned };
+}
+
+// Keep the old function name as a wrapper for backward compatibility if needed, 
+// but we'll migrate calls to updateIndexWithNewSessions.
+async function saveSessionIndex(indexData) {
+  return await updateIndexWithNewSessions(indexData.sessions || []);
 }
 
 async function computeSessionSignature(
   sessionData
 ) {
+  // Regex to strip common notification counts like (1), [5], etc.
+  // This makes signatures more stable for sites that change titles frequently.
+  const titleSanitizer = /\s*\([0-9+]+\)\s*|\s*\[[0-9+]+\].*/g;
+
   const normalized = sessionData.windows.map(
     (windowData) =>
-      windowData.tabs.map((tab) => ({
-        title: tab.title || "",
-        url: tab.url || ""
-      }))
+      windowData.tabs.map((tab) => {
+        const cleanTitle = (tab.title || "")
+          .replace(titleSanitizer, "")
+          .trim();
+        return {
+          title: cleanTitle,
+          url: tab.url || ""
+        };
+      })
   );
 
   const encoded = new TextEncoder().encode(
@@ -939,6 +984,8 @@ async function saveSessionToGitHub(
       await computeSessionSignature(
         sessionData
       );
+    console.log(`Syncing session for profile: ${profileStorageKey} (isTimeline: ${isTimeline}, force: ${forceSnapshot})`);
+
     const latestPath = `${SESSIONS_DIR}/${profileStorageKey}/latest.json`;
     const latestFile =
       await fetchGitHubJson(latestPath);
@@ -996,18 +1043,28 @@ async function saveSessionToGitHub(
       const lastTimelineSignature = currentIndex.sessions
         .filter(s => s.profileKey === profileStorageKey && s.kind === "timeline")
         .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]?.signature || null;
+      
       if (signature === lastTimelineSignature) {
+        console.log("Timeline skip: Session content identical to last timeline snapshot.");
         await chrome.storage.sync.set({
           lastSyncTime: new Date().toISOString(),
           lastSyncStatus: "success"
         });
         return { success: true, skipped: true, message: "Timeline is already up to date." };
+      } else {
+        console.log(`Timeline change detected: current=${signature.slice(0, 8)} last=${lastTimelineSignature?.slice(0, 8) || "none"}`);
       }
+    }
+
+    if (!hasChanged && !forceSnapshot && !isTimeline) {
+       console.log("Sync skip: No changes since last backup and not a timeline pulse.");
+       return { success: true, skipped: true, message: "No changes to backup." };
     }
 
     // 2. Global Baseline Update:
     // Update latest.json ONLY if there's a global change.
     if (hasChanged || forceSnapshot) {
+      console.log(`Updating global baseline (latest.json)... hasChanged=${hasChanged}`);
       const latestResponse = await putGitHubJson(
         latestPath,
         latestSessionData,
@@ -1113,20 +1170,15 @@ async function saveSessionToGitHub(
       ...withoutDuplicatePath
     ], timelineRetention);
 
-    await saveSessionIndex({
-      sessions: retained.kept
-    });
+    const newSummaries = [
+      ...(latestSummary ? [latestSummary] : []),
+      ...(historySummary ? [historySummary] : []),
+      ...(timelineSummary ? [timelineSummary] : [])
+    ];
 
-    for (const staleSession of retained.pruned) {
-      try {
-        await archiveSession(staleSession);
-      } catch (error) {
-        console.warn(
-          "Failed to archive old session:",
-          staleSession.path,
-          error
-        );
-      }
+    if (newSummaries.length > 0) {
+      console.log(`Pushing ${newSummaries.length} new summary entries to index (Atomic Merge)...`);
+      await updateIndexWithNewSessions(newSummaries);
     }
 
     await chrome.storage.sync.set({
@@ -1279,21 +1331,33 @@ async function getSessionDetails(
 async function setupSyncAlarm(
   intervalMinutes
 ) {
+  const alarmName = "sessionSync";
+  const existing = await chrome.alarms.get(alarmName);
+  
   if (intervalMinutes > 0) {
+    if (existing && existing.periodInMinutes === intervalMinutes) {
+      console.log(`Sync alarm "${alarmName}" already exists with correct interval. Skipping recreation.`);
+      return;
+    }
+    
+    // Add jitter: small random initial delay between 0 and 1 minute
+    const delayInMinutes = Math.random();
+
     await chrome.alarms.create(
-      "sessionSync",
+      alarmName,
       {
+        delayInMinutes,
         periodInMinutes: intervalMinutes
       }
     );
     console.log(
-      `Sync alarm set to ${intervalMinutes} minutes`
+      `Sync alarm "${alarmName}" (re)created for ${intervalMinutes}m with ${Math.round(delayInMinutes * 60)}s jitter.`
     );
   } else {
     await chrome.alarms.clear(
-      "sessionSync"
+      alarmName
     );
-    console.log("Sync alarm disabled");
+    console.log(`Sync alarm "${alarmName}" disabled`);
   }
 }
 
@@ -1301,14 +1365,26 @@ async function setupSyncAlarm(
  * Setup periodic timeline using alarms
  */
 async function setupTimelineAlarm(intervalMinutes) {
+  const alarmName = "timelineSync";
+  const existing = await chrome.alarms.get(alarmName);
+
   if (intervalMinutes > 0) {
-    await chrome.alarms.create("timelineSync", {
+    if (existing && existing.periodInMinutes === intervalMinutes) {
+      console.log(`Timeline alarm "${alarmName}" already exists with correct interval. Skipping recreation.`);
+      return;
+    }
+
+    // Add jitter: small random initial delay between 0.1 and 1.5 minutes
+    const delayInMinutes = 0.1 + Math.random() * 1.4;
+
+    await chrome.alarms.create(alarmName, {
+      delayInMinutes,
       periodInMinutes: intervalMinutes
     });
-    console.log(`Timeline alarm set to ${intervalMinutes} minutes`);
+    console.log(`Timeline alarm "${alarmName}" (re)created for ${intervalMinutes}m with ${Math.round(delayInMinutes * 60)}s jitter.`);
   } else {
-    await chrome.alarms.clear("timelineSync");
-    console.log("Timeline alarm disabled");
+    await chrome.alarms.clear(alarmName);
+    console.log(`Timeline alarm "${alarmName}" disabled`);
   }
 }
 
@@ -1770,16 +1846,22 @@ chrome.runtime.onInstalled.addListener(
 // Initialize on service worker startup
 (async () => {
   try {
-    const clientId =
-      await initializeClientId();
-    console.log(
-      "Service Worker initialized successfully with clientId:",
-      clientId
-    );
+    const clientId = await initializeClientId();
+    console.log("Service Worker initialized successfully with clientId:", clientId);
+
+    // Re-sync alarms from storage to ensure they persist correctly
+    const settings = await chrome.storage.sync.get(["syncInterval", "timelineInterval"]);
+    
+    if (settings.syncInterval !== undefined) {
+      console.log(`Restoring sync alarm: ${settings.syncInterval}m`);
+      await setupSyncAlarm(settings.syncInterval);
+    }
+    
+    if (settings.timelineInterval !== undefined) {
+      console.log(`Restoring timeline alarm: ${settings.timelineInterval}m`);
+      await setupTimelineAlarm(settings.timelineInterval);
+    }
   } catch (error) {
-    console.error(
-      "Service Worker initialization failed:",
-      error
-    );
+    console.error("Service Worker initialization failed:", error);
   }
 })();
