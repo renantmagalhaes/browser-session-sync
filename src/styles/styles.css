@@ -315,7 +315,7 @@ input[type="number"]:focus {
 
 /* Timeline Grouping Headers */
 .timeline-group-header {
-  margin: 20px 24px 12px;
+  margin: 24px 10px 10px 24px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-color);
   font-size: 11px;
@@ -335,9 +335,27 @@ input[type="number"]:focus {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #a855f7; /* Matching the purple theme */
-  box-shadow: 0 0 8px rgba(168, 85, 247, 0.6);
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
 }
+
+.timeline-day-group {
+  margin-left: 12px;
+  margin-right: 12px;
+  margin-bottom: 32px;
+  padding-left: 16px;
+  border-left: 4px solid var(--border-color);
+  border-radius: 4px 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.day-bracket-color-1 { border-left-color: #6366f1; color: #6366f1; } /* Indigo */
+.day-bracket-color-2 { border-left-color: #10b981; color: #10b981; } /* Emerald */
+.day-bracket-color-3 { border-left-color: #f59e0b; color: #f59e0b; } /* Amber */
+.day-bracket-color-4 { border-left-color: #ef4444; color: #ef4444; } /* Rose */
+.day-bracket-color-5 { border-left-color: #06b6d4; color: #06b6d4; } /* Cyan */
 
 .btn {
   min-height: 46px;
@@ -486,6 +504,10 @@ input::placeholder {
   transform: translateY(-2px);
   border-color: var(--border-strong);
   box-shadow: var(--shadow-md);
+}
+
+.timeline-day-group .session-item {
+  margin-bottom: 0;
 }
 
 .session-header {

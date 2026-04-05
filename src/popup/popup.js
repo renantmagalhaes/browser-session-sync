@@ -592,16 +592,31 @@ function displaySessions(
 
   if (containerId === "timelineList") {
     let currentGroup = "";
+    let dayGroupContainer = null;
+    let colorIndex = 0;
+
     for (const session of sorted) {
       const groupLabel = getGroupLabel(getSessionTimestamp(session));
+      
       if (groupLabel !== currentGroup) {
         currentGroup = groupLabel;
+        colorIndex = (colorIndex % 5) + 1; // Cycle 1-5
+
+        // Create Header
         const groupHeader = document.createElement("div");
-        groupHeader.className = "timeline-group-header";
+        groupHeader.className = `timeline-group-header day-bracket-color-${colorIndex}`;
         groupHeader.textContent = currentGroup;
         sessionsList.appendChild(groupHeader);
+
+        // Create Day Group Container
+        dayGroupContainer = document.createElement("div");
+        dayGroupContainer.className = `timeline-day-group day-bracket-color-${colorIndex}`;
+        sessionsList.appendChild(dayGroupContainer);
       }
-      sessionsList.appendChild(createSessionElement(session));
+      
+      if (dayGroupContainer) {
+        dayGroupContainer.appendChild(createSessionElement(session));
+      }
     }
   } else {
     for (const session of sorted) {
