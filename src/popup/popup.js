@@ -7,6 +7,7 @@ let selectedProfileKey = "__all__";
 let currentProfileKey = null;
 let currentTheme = "dark";
 let dateFormat = 'dmy';
+let selectedTimelineDay = "all"; // "all" or specific date string
 
 function formatDate(date) {
   const d = String(date.getDate()).padStart(2, '0');
@@ -22,7 +23,9 @@ function formatDate(date) {
 }
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const SHORT_MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const SHORT_DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 function formatLongDate(date) {
   const day = date.getDate();
@@ -331,8 +334,83 @@ function applyFilters() {
     }
   }
 
+  // Sort timeline sessions by timestamp (newest first) for consistent selector order
+  timelineSessions.sort((a, b) => new Date(getSessionTimestamp(b)) - new Date(getSessionTimestamp(a)));
+
   displaySessions(activeSessions, "sessionsList");
-  displaySessions(timelineSessions, "timelineList");
+  
+  // Handle Timeline Filtering & Selector
+  populateTimelineDayDropdown(timelineSessions);
+  
+  const finalTimeline = selectedTimelineDay === "all" 
+    ? timelineSessions 
+    : timelineSessions.filter(s => new Date(getSessionTimestamp(s)).toDateString() === selectedTimelineDay);
+    
+  displaySessions(finalTimeline, "timelineList");
+}
+
+function populateTimelineDayDropdown(timelineSessions) {
+  const dropdownEl = document.getElementById("timelineDayDropdown");
+  if (!dropdownEl) return;
+
+  // Get unique days from timelineSessions
+  const daysMap = new Map(); // toDateString -> label
+  
+  // Compact label logic
+  const getCompactLabel = (timestamp) => {
+    const d = new Date(timestamp);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    
+    if (d.toDateString() === today.toDateString()) return `Today (${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')})`;
+    if (d.toDateString() === yesterday.toDateString()) return `Yesterday (${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')})`;
+    
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const snapshotStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const dayDiff = Math.round((todayStart - snapshotStart) / (1000 * 60 * 60 * 24));
+    
+    const dateSuffix = ` (${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')})`;
+
+    if (dayDiff < 7) {
+      return DAY_NAMES[d.getDay()] + dateSuffix;
+    }
+    
+    return formatLongDate(d);
+  };
+
+  timelineSessions.forEach(session => {
+    const dateStr = new Date(getSessionTimestamp(session)).toDateString();
+    if (!daysMap.has(dateStr)) {
+      daysMap.set(dateStr, getCompactLabel(getSessionTimestamp(session)));
+    }
+  });
+
+  // Build the selector
+  const currentSelection = dropdownEl.value || selectedTimelineDay;
+  dropdownEl.innerHTML = "";
+  
+  // "All" option
+  const allOption = document.createElement("option");
+  allOption.value = "all";
+  allOption.textContent = "All Days";
+  dropdownEl.appendChild(allOption);
+
+  // Individual days
+  daysMap.forEach((label, dateStr) => {
+    const option = document.createElement("option");
+    option.value = dateStr;
+    option.textContent = label;
+    dropdownEl.appendChild(option);
+  });
+
+  dropdownEl.value = currentSelection;
+  
+  // Update change listener if not already set (reusing the same element)
+  dropdownEl.onchange = (e) => {
+    selectedTimelineDay = e.target.value;
+    applyFilters();
+  };
 }
 
 /**
