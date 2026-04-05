@@ -572,8 +572,9 @@ function displaySessions(
     const yesterday = new Date(today);
     yesterday.setDate(today.getDate() - 1);
 
-    const timeDiff = today.getTime() - d.getTime();
-    const dayDiff = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const snapshotStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const dayDiff = Math.round((todayStart - snapshotStart) / (1000 * 60 * 60 * 24));
 
     if (d.toDateString() === today.toDateString()) return "Today";
     if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
