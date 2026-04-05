@@ -94,7 +94,7 @@ Required permissions:
 
 ## ⚙️ Recommended Settings
 
-- **Auto-sync Interval**: `30` minutes is a good default
+- **Auto-sync Interval**: `5` minutes is a good default
 - **Profile Name**: human-readable label, for example `Work Laptop`
 - **Profile Folder**: stable GitHub folder name, for example `work-laptop`
 

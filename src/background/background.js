@@ -618,7 +618,7 @@ function buildSessionSummary(
 
 function applyRetention(
   sessionEntries,
-  timelineRetentionDays = 2
+  timelineRetentionDays = 10
 ) {
   const pinned = sessionEntries.filter(
     (session) => session.kind === "latest" || session.pinned
