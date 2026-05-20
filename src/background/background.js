@@ -359,11 +359,29 @@ async function fetchGitHubJson(path) {
     );
   }
 
+  let content = payload.content;
+  if (payload.size > 0 && (!content || payload.encoding === "none") && payload.sha) {
+    console.log(
+      `File ${path} is larger than 1MB (size: ${payload.size} bytes). Fetching content via Git Blobs API...`
+    );
+    const blobResponse = await fetch(
+      `${repoUrl}/git/blobs/${payload.sha}`,
+      { headers }
+    );
+    if (!blobResponse.ok) {
+      throw new Error(
+        `Failed to fetch blob for file larger than 1MB: ${await parseGitHubError(blobResponse)}`
+      );
+    }
+    const blobPayload = await blobResponse.json();
+    content = blobPayload.content;
+  }
+
   return {
     exists: true,
     sha: payload.sha,
     data: JSON.parse(
-      decodeBase64Utf8(payload.content || "")
+      decodeBase64Utf8(content || "")
     )
   };
 }
