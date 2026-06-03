@@ -100,5 +100,5 @@ This policy may be updated if the extension’s behavior changes.
 
 If you have questions about this policy, contact:
 
-- Email: rtm@insecure.codes
+- Email: renan@seclabs.cc
 - GitHub: https://github.com/renantmagalhaes
