@@ -47,7 +47,6 @@ async function loadSettings() {
       "githubUsername",
       "githubRepo",
       "githubToken",
-      "profileName",
       "profileKey",
       "syncInterval",
       "timelineInterval",
@@ -59,10 +58,16 @@ async function loadSettings() {
       "dateFormat"
     ]);
 
-  const local =
-    await chrome.storage.local.get(
-      "clientId"
-    );
+  const local = await chrome.storage.local.get([
+    "clientId",
+    "profileName"
+  ]);
+  const legacyProfile = await chrome.storage.sync.get("profileName");
+  const profileName = local.profileName || legacyProfile.profileName || "";
+
+  if (!local.profileName && legacyProfile.profileName) {
+    await chrome.storage.local.set({ profileName: legacyProfile.profileName });
+  }
 
   // Populate form fields
   if (settings.githubUsername) {
@@ -80,22 +85,24 @@ async function loadSettings() {
       "githubToken"
     ).value = settings.githubToken;
   }
-  if (settings.profileName) {
+  if (profileName) {
     document.getElementById(
       "profileName"
-    ).value = settings.profileName;
+    ).value = profileName;
   }
   const derivedProfileKey =
     settings.profileKey ||
     slugifyProfileKey(
-      settings.profileName
+      profileName
     ) ||
     local.clientId ||
     "";
   if (derivedProfileKey) {
-    document.getElementById(
-      "profileKey"
-    ).value = derivedProfileKey;
+    const profileKeyInput = document.getElementById("profileKey");
+    profileKeyInput.value = derivedProfileKey;
+    if (settings.profileKey) {
+      profileKeyInput.dataset.touched = "true";
+    }
   }
   if (
     settings.syncInterval !== undefined
@@ -249,10 +256,12 @@ async function saveSettings() {
   }
 
   try {
-    // Save to sync storage
-    await chrome.storage.sync.set(
-      settings
-    );
+    // Profile Name is deliberately device-local. Everything else may sync.
+    const { profileName, ...syncedSettings } = settings;
+    await Promise.all([
+      chrome.storage.sync.set(syncedSettings),
+      chrome.storage.local.set({ profileName })
+    ]);
 
     // Setup alarm if interval is set
     if (settings.syncInterval > 0) {

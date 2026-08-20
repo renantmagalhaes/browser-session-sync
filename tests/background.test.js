@@ -41,10 +41,13 @@ global.chrome = {
 
 const {
   applyRetention,
+  buildSessionSummary,
   buildTimelineArchiveData,
   canonicalizeSessionPath,
   deleteExpiredSavedSessions,
+  getProfileDisplayName,
   getLastTimelineSignature,
+  handleManualDelete,
   normalizeArchiveIndex,
   normalizeIndex,
   performSaveSessionToGitHub,
@@ -184,6 +187,10 @@ test("daily Timeline archive deduplicates URLs and is retry-idempotent", async (
   );
   assert.equal(first.windows[0].tabs.length, 2);
   assert.equal(first.timelineSnapshotCount, 2);
+  assert.deepEqual(
+    first.timelineSources.map((source) => source.browserAlias).sort(),
+    ["Mainframe", "WorkPC"]
+  );
   const tabA = first.windows[0].tabs.find((tab) => tab.url === "https://a.example");
   assert.equal(tabA.firstSeenAt, "2026-08-01T09:00:00Z");
   assert.equal(tabA.lastSeenAt, "2026-08-01T17:00:00Z");
@@ -196,6 +203,16 @@ test("daily Timeline archive deduplicates URLs and is retry-idempotent", async (
   );
   assert.equal(retried.windows[0].tabs.length, 2);
   assert.equal(retried.timelineSnapshotCount, 2);
+
+  const summary = buildSessionSummary(
+    first,
+    "sessions/rtm/archive/timeline/day.json",
+    "sha",
+    "timelineArchive"
+  );
+  assert.equal(summary.browserAlias, "Mainframe, WorkPC");
+  assert.match(summary.searchText, /mainframe/);
+  assert.match(summary.searchText, /workpc/);
 });
 
 test("timeline deduplication compares each computer with its own last entry", () => {
@@ -221,6 +238,19 @@ test("timeline deduplication compares each computer with its own last entry", ()
     getLastTimelineSignature(index, "rtm", "mainframe"),
     "mainframe-state"
   );
+});
+
+test("device-local Profile Name overrides the legacy synchronized name", async () => {
+  const originalLocalGet = chrome.storage.local.get;
+  const originalSyncGet = chrome.storage.sync.get;
+  chrome.storage.local.get = async () => ({ profileName: "WorkPC" });
+  chrome.storage.sync.get = async () => ({ profileName: "Mainframe" });
+  try {
+    assert.equal(await getProfileDisplayName(), "WorkPC");
+  } finally {
+    chrome.storage.local.get = originalLocalGet;
+    chrome.storage.sync.get = originalSyncGet;
+  }
 });
 
 test("normalizes and deduplicates active index entries by path", () => {
@@ -285,6 +315,135 @@ test("Saved retention deletes only old unpinned snapshots when enabled", () => {
 
   const disabled = applyRetention(entries, 10, 0);
   assert.deepEqual(disabled.deleted, []);
+});
+
+test("Saved count retention is isolated per computer in a shared folder", () => {
+  const timestamp = new Date().toISOString();
+  const entries = [
+    ...Array.from({ length: 31 }, (_, index) => ({
+      path: `sessions/rtm/history/mainframe-${index}.json`,
+      kind: "history",
+      profileKey: "rtm",
+      clientId: "mainframe",
+      timestamp: new Date(Date.now() - index * 1000).toISOString()
+    })),
+    {
+      path: "sessions/rtm/history/workpc.json",
+      kind: "history",
+      profileKey: "rtm",
+      clientId: "workpc",
+      timestamp
+    }
+  ];
+  const result = applyRetention(entries, 10, 0);
+  assert.equal(
+    result.kept.filter((entry) => entry.clientId === "mainframe").length,
+    30
+  );
+  assert.equal(
+    result.kept.filter((entry) => entry.clientId === "workpc").length,
+    1
+  );
+  assert.equal(result.pruned.length, 1);
+});
+
+test("manual delete rejects the shared Current file", async () => {
+  const result = await handleManualDelete({
+    path: "sessions/rtm/latest.json",
+    profileKey: "rtm",
+    kind: "latest"
+  });
+  assert.equal(result.success, false);
+  assert.match(result.error, /Current sessions cannot be deleted/);
+});
+
+test("deleting one computer's Saved snapshot preserves the other computer in the shared folder", async () => {
+  const originalFetch = global.fetch;
+  const targetPath = "sessions/rtm/history/mainframe.json";
+  const otherPath = "sessions/rtm/history/workpc.json";
+  const files = new Map([
+    [targetPath, {
+      sha: "target-sha",
+      data: { timestamp: "2026-08-20T10:00:00Z", windows: [] }
+    }],
+    ["sessions/index.json", {
+      sha: "index-sha",
+      data: {
+        version: 2,
+        sessions: [
+          {
+            path: targetPath,
+            kind: "history",
+            profileKey: "rtm",
+            clientId: "mainframe",
+            browserAlias: "Mainframe",
+            timestamp: "2026-08-20T10:00:00Z"
+          },
+          {
+            path: otherPath,
+            kind: "history",
+            profileKey: "rtm",
+            clientId: "workpc",
+            browserAlias: "WorkPC",
+            timestamp: "2026-08-20T11:00:00Z"
+          }
+        ]
+      }
+    }]
+  ]);
+
+  global.fetch = async (url, options = {}) => {
+    const marker = "/contents/";
+    const path = decodeURIComponent(url.slice(url.indexOf(marker) + marker.length));
+    if (!options.method) {
+      const file = files.get(path);
+      if (!file) {
+        return { ok: false, status: 404, async json() { return {}; } };
+      }
+      const content = Buffer.from(JSON.stringify(file.data)).toString("base64");
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { sha: file.sha, size: content.length, encoding: "base64", content };
+        }
+      };
+    }
+    if (options.method === "DELETE") {
+      files.delete(path);
+      return { ok: true, status: 200, async json() { return {}; } };
+    }
+    if (options.method === "PUT") {
+      const body = JSON.parse(options.body);
+      const data = JSON.parse(Buffer.from(body.content, "base64").toString("utf8"));
+      files.set(path, { sha: "updated-index-sha", data });
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { content: { sha: "updated-index-sha" } }; }
+      };
+    }
+    throw new Error(`Unexpected ${options.method} ${url}`);
+  };
+
+  try {
+    const result = await handleManualDelete({
+      path: targetPath,
+      kind: "history",
+      profileKey: "rtm",
+      clientId: "mainframe",
+      browserAlias: "Mainframe"
+    });
+    assert.equal(result.success, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(files.has(targetPath), false);
+  assert.deepEqual(
+    files.get("sessions/index.json").data.sessions.map((session) => session.path),
+    [otherPath]
+  );
 });
 
 test("expired Saved retention removes the physical GitHub file", async () => {

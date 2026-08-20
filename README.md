@@ -201,7 +201,7 @@ If you want a shorter install walkthrough, see [QUICKSTART.md](./QUICKSTART.md).
 | `GitHub Username`       | GitHub account that owns the repository                                   |
 | `Repository Name`       | Private repository used for storage                                       |
 | `Personal Access Token` | GitHub token used for API access                                          |
-| `Profile Name`          | Per-computer display name, for example `Mainframe` or `WorkPC`            |
+| `Profile Name`          | Device-local display name, for example `Mainframe` or `WorkPC`            |
 | `Profile Folder`        | Shared, lowercase storage key; use the same value to group computers      |
 | `Auto-sync Interval`    | Minutes between automatic current-session updates, `0` disables auto-sync |
 | `Timeline Interval`     | Minutes between change checks for Timeline, `0` disables it               |
@@ -210,7 +210,7 @@ If you want a shorter install walkthrough, see [QUICKSTART.md](./QUICKSTART.md).
 | `Archive Retention`     | Days to keep archived Saved snapshots and compact Timeline days           |
 | `Client ID`             | Internal auto-generated identifier stored locally                         |
 
-If three computers use Profile Folder `rtm`, they share one `sessions/rtm/latest.json`; the newest write is Current. Their Timeline and manual Saved files remain separate and retain each computer's Profile Name and local Client ID.
+If three computers use Profile Folder `rtm`, they share one `sessions/rtm/latest.json`; the newest write is Current. Their Timeline and manual Saved files remain separate and retain each computer's device-local Profile Name and Client ID. The active Saved count limit is applied per Client ID, so one computer cannot displace another computer's allowance.
 
 ## Popup Behavior
 

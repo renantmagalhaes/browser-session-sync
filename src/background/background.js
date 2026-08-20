@@ -285,11 +285,8 @@ function slugifyProfileKey(value) {
 async function getProfileStorageKey() {
   const clientId =
     await initializeClientId();
-  const { profileKey, profileName } =
-    await chrome.storage.sync.get([
-      "profileKey",
-      "profileName"
-    ]);
+  const { profileKey } = await chrome.storage.sync.get("profileKey");
+  const profileName = await getProfileDisplayName();
 
   // Priority: 1. Explicit profileKey, 2. Slugified profileName, 3. Local clientId (fallback)
   const normalizedKey =
@@ -306,6 +303,20 @@ async function getProfileStorageKey() {
 
   // If no name is provided, use the LOCAL clientId and do NOT sync it.
   return normalizedKey || clientId;
+}
+
+async function getProfileDisplayName() {
+  const local = await chrome.storage.local.get("profileName");
+  if (local.profileName) return local.profileName;
+
+  // Migrate the pre-1.4.6 value. Profile names must be local so computers
+  // sharing a Chrome account and Profile Folder can retain distinct aliases.
+  const legacy = await chrome.storage.sync.get("profileName");
+  if (legacy.profileName) {
+    await chrome.storage.local.set({ profileName: legacy.profileName });
+    return legacy.profileName;
+  }
+  return "";
 }
 
 function encodeBase64Utf8(text) {
@@ -708,6 +719,10 @@ function buildSearchText(
     sessionData.browserAlias,
     sessionData.profileKey,
     sessionData.clientId,
+    ...(sessionData.timelineSources || []).flatMap((source) => [
+      source.browserAlias || "",
+      source.clientId || ""
+    ]),
     ...tabs.flatMap((tab) => [
       tab.title || "",
       tab.url || ""
@@ -726,6 +741,11 @@ function buildSessionSummary(
   const tabs = sessionData.windows.flatMap(
     (windowData) => windowData.tabs
   );
+  const sourceAliases = [...new Set(
+    (sessionData.timelineSources || [])
+      .map((source) => source.browserAlias)
+      .filter(Boolean)
+  )];
 
   return {
     path,
@@ -733,8 +753,9 @@ function buildSessionSummary(
     kind,
     timestamp: sessionData.timestamp,
     signature: sessionData.signature || null,
-    browserAlias:
-      sessionData.browserAlias,
+    browserAlias: sourceAliases.length > 1
+      ? sourceAliases.join(", ")
+      : sessionData.browserAlias,
     profileKey:
       sessionData.profileKey || "",
     clientId: sessionData.clientId,
@@ -806,8 +827,8 @@ function applyRetention(
     }
 
     const key =
-      session.profileKey ||
       session.clientId ||
+      session.profileKey ||
       "unknown";
     const count =
       countByClient.get(key) || 0;
@@ -896,6 +917,22 @@ async function buildTimelineArchiveData(
     currentTimestamp && new Date(currentTimestamp) > new Date(latest.timestamp)
       ? currentData
       : latest;
+  const timelineSourcesByClient = new Map();
+  const addTimelineSource = (sessionData) => {
+    if (!sessionData?.browserAlias && !sessionData?.clientId) return;
+    const key = sessionData.clientId || sessionData.browserAlias;
+    timelineSourcesByClient.set(key, {
+      clientId: sessionData.clientId || null,
+      browserAlias: sessionData.browserAlias || "Unknown Browser"
+    });
+  };
+  for (const source of currentData?.timelineSources || []) {
+    addTimelineSource(source);
+  }
+  addTimelineSource(currentData);
+  for (const source of sourceFiles) {
+    addTimelineSource(source.data);
+  }
   const archiveData = {
     ...latestData,
     timestamp: latestData.timestamp,
@@ -905,6 +942,7 @@ async function buildTimelineArchiveData(
     timelineSnapshotCount:
       (currentData?.timelineSnapshotCount || 0) + addedSnapshots,
     timelineSourcePaths: [...processedPaths],
+    timelineSources: [...timelineSourcesByClient.values()],
     friendlyName: currentData?.friendlyName || null,
     pinned: false,
     windows: [{ id: null, tabs: [...tabsByUrl.values()] }]
@@ -1505,11 +1543,9 @@ async function performSaveSessionToGitHub(
       await initializeClientId();
     const profileStorageKey =
       await getProfileStorageKey();
-    const { profileName, excludeLocalTabs = false } =
-      await chrome.storage.sync.get([
-        "profileName",
-        "excludeLocalTabs"
-      ]);
+    const profileName = await getProfileDisplayName();
+    const { excludeLocalTabs = false } =
+      await chrome.storage.sync.get("excludeLocalTabs");
     const alias =
       profileName || "Default Browser";
     const forceSnapshot = Boolean(
@@ -2123,31 +2159,50 @@ async function handleManualDelete(
   isFromArchive = false
 ) {
   try {
+    const inferredProfileKey =
+      sessionSummary.profileKey ||
+      (sessionSummary.path.startsWith(`${SESSIONS_DIR}/`)
+        ? sessionSummary.path.split("/")[1]
+        : sessionSummary.path.split("/")[0]) ||
+      (await getProfileStorageKey());
+    const sessionPath = canonicalizeSessionPath(
+      sessionSummary.path,
+      inferredProfileKey
+    );
+    const fromArchive = isFromArchive || sessionPath.includes("/archive/");
+
+    if (
+      sessionSummary.kind === "latest" ||
+      sessionPath.endsWith("/latest.json")
+    ) {
+      return {
+        success: false,
+        error: "Current sessions cannot be deleted; update them instead."
+      };
+    }
+
     // 1. Delete the file from GitHub.
     const file = await fetchGitHubJson(
-      sessionSummary.path
+      sessionPath
     );
     if (file.exists) {
       await deleteGitHubFile(
-        sessionSummary.path,
+        sessionPath,
         file.sha,
-        `Manual delete of session: ${sessionSummary.path}`
+        `Manual delete of session: ${sessionPath}`
       );
     }
 
     // 2. Remove from the appropriate index.
-    if (isFromArchive) {
-      const profileKey =
-        sessionSummary.profileKey ||
-        (await getProfileStorageKey());
-      await mutateArchiveIndex(profileKey, (index) => ({
+    if (fromArchive) {
+      await mutateArchiveIndex(inferredProfileKey, (index) => ({
         ...index,
         sessions: index.sessions.filter(
-          (session) => session.path !== sessionSummary.path
+          (session) => session.path !== sessionPath
         )
       }), "Update archive index after manual delete");
     } else {
-      await removeSessionFromIndex(sessionSummary.path);
+      await removeSessionFromIndex(sessionPath);
     }
 
     return { success: true };
@@ -2357,10 +2412,13 @@ chrome.runtime.onInstalled.addListener(
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     applyRetention,
+    buildSessionSummary,
     buildTimelineArchiveData,
     canonicalizeSessionPath,
     deleteExpiredSavedSessions,
+    getProfileDisplayName,
     getLastTimelineSignature,
+    handleManualDelete,
     isWithinRetention,
     normalizeArchiveIndex,
     normalizeIndex,

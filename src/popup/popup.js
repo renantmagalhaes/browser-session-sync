@@ -187,12 +187,13 @@ async function getCurrentProfileKey() {
     ]);
   const localSettings =
     await chrome.storage.local.get([
-      "clientId"
+      "clientId",
+      "profileName"
     ]);
 
   return (
     syncSettings.profileKey ||
-    (syncSettings.profileName || "")
+    (localSettings.profileName || syncSettings.profileName || "")
       .toLowerCase()
       .trim()
       .replace(/[^a-z0-9]+/g, "-")
@@ -212,20 +213,19 @@ function populateProfileFilter() {
   for (const session of allSessions) {
     const key =
       getSessionProfileKey(session);
+    const alias = getSessionAlias(session);
 
     if (!profileMap.has(key)) {
-      profileMap.set(
-        key,
-        getSessionAlias(session)
-      );
+      profileMap.set(key, new Set());
     }
+    profileMap.get(key).add(alias);
   }
 
   const sortedProfiles = Array.from(
     profileMap.entries()
-  ).sort((a, b) =>
-    a[1].localeCompare(b[1])
-  );
+  )
+    .map(([key, aliases]) => [key, [...aliases].sort().join(", ")])
+    .sort((a, b) => a[1].localeCompare(b[1]));
 
   filterEl.innerHTML = "";
 
