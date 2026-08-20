@@ -2291,6 +2291,7 @@ if (typeof module !== "undefined" && module.exports) {
     isWithinRetention,
     normalizeArchiveIndex,
     normalizeIndex,
+    performSaveSessionToGitHub,
     putGitHubJson
   };
 }

@@ -46,8 +46,111 @@ const {
   getLastTimelineSignature,
   normalizeArchiveIndex,
   normalizeIndex,
+  performSaveSessionToGitHub,
   putGitHubJson
 } = require("../src/background/background.js");
+
+test("two consecutive manual snapshots create two Saved files without a second Current write", async () => {
+  const originalFetch = global.fetch;
+  const originalSyncGet = chrome.storage.sync.get;
+  const originalWindowsGetAll = chrome.windows.getAll;
+  const files = new Map();
+  let nextSha = 1;
+
+  chrome.storage.sync.get = async (keys) => {
+    const settings = {
+      githubUsername: "owner",
+      githubRepo: "repo",
+      githubToken: "token",
+      profileName: "Mainframe",
+      profileKey: "rtm",
+      excludeLocalTabs: false,
+      timelineRetention: 10,
+      archiveRetention: 30
+    };
+    if (typeof keys === "string") return { [keys]: settings[keys] };
+    if (Array.isArray(keys)) {
+      return Object.fromEntries(keys.map((key) => [key, settings[key]]));
+    }
+    return { ...keys, ...settings };
+  };
+  chrome.windows.getAll = async () => [{
+    id: 1,
+    tabs: [{ title: "A", url: "https://a.example", active: true }]
+  }];
+
+  global.fetch = async (url, options = {}) => {
+    const marker = "/contents/";
+    const path = decodeURIComponent(url.slice(url.indexOf(marker) + marker.length));
+    if (!options.method) {
+      const file = files.get(path);
+      if (!file) {
+        return { ok: false, status: 404, async json() { return { message: "Not Found" }; } };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            sha: file.sha,
+            size: file.content.length,
+            encoding: "base64",
+            content: file.content
+          };
+        }
+      };
+    }
+
+    if (options.method === "PUT") {
+      const body = JSON.parse(options.body);
+      const existing = files.get(path);
+      if (existing && body.sha !== existing.sha) {
+        return {
+          ok: false,
+          status: 409,
+          async json() { return { message: `${existing.sha} is current but another SHA was expected` }; }
+        };
+      }
+      const sha = `sha-${nextSha++}`;
+      files.set(path, { sha, content: body.content });
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { content: { sha } }; }
+      };
+    }
+
+    throw new Error(`Unexpected ${options.method} ${url}`);
+  };
+
+  try {
+    const first = await performSaveSessionToGitHub({
+      forceSnapshot: true,
+      friendlyName: "First"
+    });
+    const second = await performSaveSessionToGitHub({
+      forceSnapshot: true,
+      friendlyName: "Second"
+    });
+    assert.equal(first.success, true);
+    assert.equal(second.success, true);
+
+    const savedPaths = [...files.keys()].filter(
+      (path) => path.startsWith("sessions/rtm/history/session-")
+    );
+    assert.equal(savedPaths.length, 2);
+    assert.equal(files.has("sessions/rtm/latest.json"), true);
+
+    const indexFile = files.get("sessions/index.json");
+    const index = JSON.parse(Buffer.from(indexFile.content, "base64").toString("utf8"));
+    assert.equal(index.sessions.filter((session) => session.kind === "history").length, 2);
+    assert.equal(index.sessions.filter((session) => session.kind === "latest").length, 1);
+  } finally {
+    global.fetch = originalFetch;
+    chrome.storage.sync.get = originalSyncGet;
+    chrome.windows.getAll = originalWindowsGetAll;
+  }
+});
 
 test("daily Timeline archive deduplicates URLs and is retry-idempotent", async () => {
   const sourceFiles = [

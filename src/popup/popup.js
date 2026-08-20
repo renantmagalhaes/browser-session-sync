@@ -418,6 +418,11 @@ async function sendMessageWithRetry(
   maxRetries = 5,
   delayMs = 200
 ) {
+  if (!globalThis.chrome?.runtime?.sendMessage) {
+    throw new Error(
+      "Extension context is unavailable. Close this popup, reload the extension, and open it again."
+    );
+  }
   let lastError;
 
   for (
@@ -1566,8 +1571,18 @@ function escapeHtml(text) {
 /**
  * Open settings page
  */
-function openSettings() {
-  chrome.runtime.openOptionsPage();
+async function openSettings() {
+  try {
+    if (!globalThis.chrome?.runtime?.openOptionsPage) {
+      throw new Error(
+        "Extension context is unavailable. Close this popup, reload the extension, and open it again."
+      );
+    }
+    await globalThis.chrome.runtime.openOptionsPage();
+  } catch (error) {
+    console.error("Unable to open Settings:", error);
+    alert(error.message);
+  }
 }
 
 // Event listeners
