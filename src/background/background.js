@@ -804,7 +804,7 @@ function applyRetention(
   const keptHistory = [];
   const pruned = [];
   const deleted = [];
-  const countByClient = new Map();
+  const countByProfile = new Map();
 
   const sorted = [...historyEntries].sort(
     (a, b) =>
@@ -842,11 +842,11 @@ function applyRetention(
       session.clientId ||
       "unknown";
     const count =
-      countByClient.get(key) || 0;
+      countByProfile.get(key) || 0;
 
     if (count < MAX_SAVED_PER_PROFILE) {
       keptHistory.push(session);
-      countByClient.set(key, count + 1);
+      countByProfile.set(key, count + 1);
     } else {
       pruned.push(session);
     }
@@ -1487,7 +1487,7 @@ async function computeSessionSignature(
   const encoded = new TextEncoder().encode(
     JSON.stringify({
       browserAlias:
-        sessionData.browserAlias,
+        normalizeProfileName(sessionData.browserAlias),
       windows: normalized
     })
   );
@@ -2426,6 +2426,7 @@ if (typeof module !== "undefined" && module.exports) {
     buildSessionSummary,
     buildTimelineArchiveData,
     canonicalizeSessionPath,
+    computeSessionSignature,
     deleteExpiredSavedSessions,
     getProfileDisplayName,
     getLastTimelineSignature,

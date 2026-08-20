@@ -44,6 +44,7 @@ const {
   buildSessionSummary,
   buildTimelineArchiveData,
   canonicalizeSessionPath,
+  computeSessionSignature,
   deleteExpiredSavedSessions,
   getProfileDisplayName,
   getLastTimelineSignature,
@@ -273,6 +274,19 @@ test("Profile Name comparisons normalize case and whitespace", () => {
     ]
   }, "sessions/rtm/archive/timeline/day.json", "sha", "timelineArchive");
   assert.equal(summary.browserAlias, "RTM");
+});
+
+test("case-only Profile Name changes do not create a different session signature", async () => {
+  const session = {
+    browserAlias: "RTM",
+    windows: [{ tabs: [{ title: "A", url: "https://a.example" }] }]
+  };
+  const upper = await computeSessionSignature(session);
+  const lower = await computeSessionSignature({
+    ...session,
+    browserAlias: " rtm "
+  });
+  assert.equal(upper, lower);
 });
 
 test("normalizes and deduplicates active index entries by path", () => {
