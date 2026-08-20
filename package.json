@@ -1,0 +1,8 @@
+{
+  "name": "browser-session-sync",
+  "version": "1.4.3",
+  "private": true,
+  "scripts": {
+    "test": "node tests/background.test.js"
+  }
+}

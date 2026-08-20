@@ -10,6 +10,15 @@
 const SESSIONS_DIR = "sessions";
 const INDEX_PATH = `${SESSIONS_DIR}/index.json`;
 const MAX_HISTORY_PER_CLIENT = 30;
+const MAX_WRITE_ATTEMPTS = 7;
+
+let mutationQueue = Promise.resolve();
+
+function enqueueMutation(task) {
+  const operation = mutationQueue.then(task, task);
+  mutationQueue = operation.catch(() => undefined);
+  return operation;
+}
 
 console.log(
   "Service Worker: Initializing..."
@@ -46,17 +55,17 @@ async function handleMessage(request) {
 
     case "renameSession":
       console.log("Processing renameSession");
-      return await handleRenameSession(
+      return await enqueueMutation(() => handleRenameSession(
         request.sessionPath,
         request.newName
-      );
+      ));
 
     case "toggleSessionPin":
       console.log("Processing toggleSessionPin");
-      return await handleToggleSessionPin(
+      return await enqueueMutation(() => handleToggleSessionPin(
         request.sessionPath,
         request.isPinned
-      );
+      ));
 
     case "listSessions":
       console.log(
@@ -120,24 +129,24 @@ async function handleMessage(request) {
       return { success: true };
 
     case "runRetention":
-      return await reconcileRepositoryRetention();
+      return await enqueueMutation(() => reconcileRepositoryRetention());
 
     case "archiveSessionManually":
       console.log(
         "Processing archiveSessionManually"
       );
-      return await handleManualArchive(
+      return await enqueueMutation(() => handleManualArchive(
         request.sessionSummary
-      );
+      ));
 
     case "deleteSession":
       console.log(
         "Processing deleteSession"
       );
-      return await handleManualDelete(
+      return await enqueueMutation(() => handleManualDelete(
         request.sessionSummary,
         request.isFromArchive
-      );
+      ));
 
     case "searchArchive":
       console.log(
@@ -149,9 +158,9 @@ async function handleMessage(request) {
 
     case "unarchiveSession":
       console.log("Processing unarchiveSession");
-      return await handleUnarchiveSession(
+      return await enqueueMutation(() => handleUnarchiveSession(
         request.sessionSummary
-      );
+      ));
 
     default:
       console.warn(
@@ -421,14 +430,27 @@ async function putGitHubJson(
   path,
   data,
   message,
-  sha
+  sha,
+  options = {}
 ) {
   const repoUrl = await getRepoUrl();
   const headers =
     await getGitHubHeaders();
   let currentSha = sha;
+  const maxAttempts = options.maxAttempts || MAX_WRITE_ATTEMPTS;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let dataToWrite = data;
+    if (options.conflictResolver) {
+      const existingFile = await fetchGitHubJson(path);
+      currentSha = existingFile.exists ? existingFile.sha : undefined;
+      dataToWrite = await options.conflictResolver(
+        existingFile.exists ? existingFile.data : null,
+        existingFile.exists,
+        attempt
+      );
+    }
+
     const response = await fetch(
       `${repoUrl}/contents/${path}`,
       {
@@ -437,7 +459,7 @@ async function putGitHubJson(
         body: JSON.stringify({
           message,
           content: encodeBase64Utf8(
-            JSON.stringify(data, null, 2)
+            JSON.stringify(dataToWrite, null, 2)
           ),
           ...(currentSha
             ? { sha: currentSha }
@@ -461,7 +483,7 @@ async function putGitHubJson(
       errorMessage.toLowerCase().includes("conflict") ||
       errorMessage.toLowerCase().includes("expected");
 
-    const shouldRetry = attempt < 2 && isConflict;
+    const shouldRetry = attempt < maxAttempts - 1 && isConflict;
 
     if (!shouldRetry) {
       throw new Error(errorMessage);
@@ -472,13 +494,14 @@ async function putGitHubJson(
     );
 
     // Random jitter between 200ms and 1500ms to resolve races
-    await sleep(200 + Math.random() * 1300);
+    await sleep(
+      Math.min(5000, 250 * 2 ** attempt) + Math.random() * 750
+    );
 
-    const existingFile =
-      await fetchGitHubJson(path);
-    currentSha = existingFile.exists
-      ? existingFile.sha
-      : undefined;
+    if (!options.conflictResolver) {
+      const existingFile = await fetchGitHubJson(path);
+      currentSha = existingFile.exists ? existingFile.sha : undefined;
+    }
   }
 
   throw new Error(
@@ -500,7 +523,7 @@ async function deleteGitHubFile(
     await getGitHubHeaders();
   let currentSha = sha;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
     const response = await fetch(
       `${repoUrl}/contents/${path}`,
       {
@@ -528,7 +551,7 @@ async function deleteGitHubFile(
       errorMessage.toLowerCase().includes("conflict") ||
       errorMessage.toLowerCase().includes("expected");
 
-    const shouldRetry = attempt < 2 && isConflict;
+    const shouldRetry = attempt < MAX_WRITE_ATTEMPTS - 1 && isConflict;
 
     if (!shouldRetry) {
       throw new Error(errorMessage);
@@ -539,7 +562,9 @@ async function deleteGitHubFile(
     );
 
     // Random jitter before retry
-    await sleep(200 + Math.random() * 1300);
+    await sleep(
+      Math.min(5000, 250 * 2 ** attempt) + Math.random() * 750
+    );
 
     const existingFile =
       await fetchGitHubJson(path);
@@ -557,28 +582,122 @@ function normalizeIndex(indexData) {
     ? indexData.sessions
     : [];
 
+  const normalizedSessions = sessions
+    .filter(
+      (session) =>
+        session &&
+        session.path &&
+        session.timestamp
+    )
+    .map((session) => {
+      const inferredProfileKey =
+        session.profileKey ||
+        (!session.path.startsWith(`${SESSIONS_DIR}/`)
+          ? session.path.split("/")[0]
+          : "");
+      return {
+        ...session,
+        path: inferredProfileKey
+          ? canonicalizeSessionPath(session.path, inferredProfileKey)
+          : session.path,
+        previewTabs: Array.isArray(session.previewTabs)
+          ? session.previewTabs
+          : [],
+        searchText: session.searchText || ""
+      };
+    });
+  const sessionsByPath = new Map();
+  for (const session of normalizedSessions) {
+    const existing = sessionsByPath.get(session.path);
+    if (
+      !existing ||
+      new Date(session.timestamp) >= new Date(existing.timestamp)
+    ) {
+      sessionsByPath.set(session.path, session);
+    }
+  }
+
   return {
     version: 2,
     updatedAt:
       indexData?.updatedAt || null,
-    sessions: sessions
-      .filter(
-        (session) =>
-          session &&
-          session.path &&
-          session.timestamp
-      )
+    sessions: [...sessionsByPath.values()]
+  };
+}
+
+function canonicalizeSessionPath(sessionPath, profileKey) {
+  if (!sessionPath || sessionPath.startsWith(`${SESSIONS_DIR}/`)) {
+    return sessionPath;
+  }
+  if (sessionPath.startsWith(`${profileKey}/`)) {
+    return `${SESSIONS_DIR}/${sessionPath}`;
+  }
+  return `${SESSIONS_DIR}/${profileKey}/${sessionPath.replace(/^\/+/, "")}`;
+}
+
+function normalizeArchiveIndex(profileKey, indexData) {
+  return {
+    ...(indexData || {}),
+    sessions: (Array.isArray(indexData?.sessions) ? indexData.sessions : [])
+      .filter((session) => session?.path && session?.timestamp)
       .map((session) => ({
         ...session,
-        previewTabs: Array.isArray(
-          session.previewTabs
-        )
+        profileKey: session.profileKey || profileKey,
+        path: canonicalizeSessionPath(session.path, profileKey),
+        previewTabs: Array.isArray(session.previewTabs)
           ? session.previewTabs
           : [],
-        searchText:
-          session.searchText || ""
+        searchText: session.searchText || ""
       }))
   };
+}
+
+async function mutateSessionIndex(mutator, message) {
+  let finalIndex;
+  await putGitHubJson(
+    INDEX_PATH,
+    null,
+    message,
+    undefined,
+    {
+      conflictResolver: (currentData) => {
+        const currentIndex = normalizeIndex(currentData || { sessions: [] });
+        finalIndex = normalizeIndex(
+          mutator(currentIndex) || currentIndex
+        );
+        finalIndex.updatedAt = new Date().toISOString();
+        return finalIndex;
+      }
+    }
+  );
+  return finalIndex;
+}
+
+async function mutateArchiveIndex(profileKey, mutator, message) {
+  const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+  let finalIndex;
+  await putGitHubJson(
+    archiveIndexPath,
+    null,
+    message,
+    undefined,
+    {
+      conflictResolver: (currentData) => {
+        const currentIndex = normalizeArchiveIndex(profileKey, currentData);
+        finalIndex = mutator(currentIndex) || currentIndex;
+        const byPath = new Map();
+        for (const session of finalIndex.sessions || []) {
+          if (session?.path) byPath.set(session.path, session);
+        }
+        finalIndex.sessions = [...byPath.values()].sort(
+          (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+        );
+        finalIndex.updatedAt = new Date().toISOString();
+        return finalIndex;
+      }
+    }
+  );
+  return finalIndex;
 }
 
 function buildSearchText(
@@ -714,18 +833,73 @@ function isWithinRetention(timestamp, retentionDays) {
   return Math.floor((today - date) / 86400000) < retentionDays;
 }
 
-async function deleteTimelineSession(sessionSummary) {
-  const sessionFile = await fetchGitHubJson(sessionSummary.path);
+async function buildTimelineArchiveData(
+  currentData,
+  sourceFiles,
+  latest,
+  dayKey
+) {
+  const tabsByUrl = new Map();
+  const processedPaths = new Set(
+    currentData?.timelineSourcePaths || []
+  );
 
-  if (!sessionFile.exists) {
-    return;
+  const addTabs = (sessionData) => {
+    for (const windowData of sessionData?.windows || []) {
+      for (const tab of windowData.tabs || []) {
+        if (!tab.url) continue;
+        const existing = tabsByUrl.get(tab.url);
+        const firstSeenAt = tab.firstSeenAt || sessionData.timestamp;
+        const lastSeenAt = tab.lastSeenAt || sessionData.timestamp;
+        tabsByUrl.set(tab.url, {
+          title: tab.title || existing?.title || "Untitled",
+          url: tab.url,
+          active: false,
+          firstSeenAt:
+            existing?.firstSeenAt &&
+            new Date(existing.firstSeenAt) < new Date(firstSeenAt)
+              ? existing.firstSeenAt
+              : firstSeenAt,
+          lastSeenAt:
+            existing?.lastSeenAt &&
+            new Date(existing.lastSeenAt) > new Date(lastSeenAt)
+              ? existing.lastSeenAt
+              : lastSeenAt
+        });
+      }
+    }
+  };
+
+  addTabs(currentData);
+  let addedSnapshots = 0;
+  for (const source of sourceFiles) {
+    if (!processedPaths.has(source.summary.path)) {
+      addTabs(source.data);
+      processedPaths.add(source.summary.path);
+      addedSnapshots++;
+    }
   }
 
-  await deleteGitHubFile(
-    sessionSummary.path,
-    sessionFile.sha,
-    `Delete expired timeline snapshot: ${sessionSummary.path}`
-  );
+  const currentTimestamp = currentData?.timestamp;
+  const latestData =
+    currentTimestamp && new Date(currentTimestamp) > new Date(latest.timestamp)
+      ? currentData
+      : latest;
+  const archiveData = {
+    ...latestData,
+    timestamp: latestData.timestamp,
+    isTimeline: false,
+    isTimelineArchive: true,
+    timelineDate: dayKey,
+    timelineSnapshotCount:
+      (currentData?.timelineSnapshotCount || 0) + addedSnapshots,
+    timelineSourcePaths: [...processedPaths],
+    friendlyName: currentData?.friendlyName || null,
+    pinned: false,
+    windows: [{ id: null, tabs: [...tabsByUrl.values()] }]
+  };
+  archiveData.signature = await computeSessionSignature(archiveData);
+  return archiveData;
 }
 
 async function archiveTimelineDay(profileKey, dayKey, sessions) {
@@ -745,75 +919,37 @@ async function archiveTimelineDay(profileKey, dayKey, sessions) {
   const latest = sourceFiles.at(-1).data;
   const [year, month] = dayKey.split("-");
   const archivePath = `${SESSIONS_DIR}/${profileKey}/archive/timeline/${year}/${month}/day-${dayKey}.json`;
-  const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
-  const archiveFile = await fetchGitHubJson(archivePath);
-  const tabsByUrl = new Map();
-  let snapshotCount = archiveFile.exists
-    ? archiveFile.data.timelineSnapshotCount || 0
-    : 0;
-
-  const addTabs = (sessionData) => {
-    for (const windowData of sessionData.windows || []) {
-      for (const tab of windowData.tabs || []) {
-        if (!tab.url) continue;
-        const existing = tabsByUrl.get(tab.url);
-        tabsByUrl.set(tab.url, {
-          title: tab.title || existing?.title || "Untitled",
-          url: tab.url,
-          active: false,
-          firstSeenAt: existing?.firstSeenAt || sessionData.timestamp,
-          lastSeenAt: sessionData.timestamp
-        });
-      }
-    }
-  };
-
-  if (archiveFile.exists) addTabs(archiveFile.data);
-  for (const source of sourceFiles) addTabs(source.data);
-  snapshotCount += sourceFiles.length;
-
-  const archiveData = {
-    ...latest,
-    timestamp: latest.timestamp,
-    isTimeline: false,
-    isTimelineArchive: true,
-    timelineDate: dayKey,
-    timelineSnapshotCount: snapshotCount,
-    friendlyName: null,
-    pinned: false,
-    windows: [{ id: null, tabs: [...tabsByUrl.values()] }]
-  };
-  archiveData.signature = await computeSessionSignature(archiveData);
-
+  let archiveData;
   const response = await putGitHubJson(
     archivePath,
-    archiveData,
+    null,
     `Archive deduplicated timeline for ${dayKey}`,
-    archiveFile.exists ? archiveFile.sha : undefined
+    undefined,
+    {
+      conflictResolver: async (currentData) => {
+        archiveData = await buildTimelineArchiveData(
+          currentData,
+          sourceFiles,
+          latest,
+          dayKey
+        );
+        return archiveData;
+      }
+    }
   );
-  const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
-  const archiveIndex = archiveIndexFile.exists
-    ? archiveIndexFile.data
-    : { sessions: [] };
   const summary = buildSessionSummary(
     archiveData,
     archivePath,
     response.content.sha,
     "timelineArchive"
   );
-  archiveIndex.sessions = (archiveIndex.sessions || []).filter(
-    (session) => session.path !== archivePath
-  );
-  archiveIndex.sessions.push(summary);
-  archiveIndex.sessions.sort(
-    (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
-  );
-  await putGitHubJson(
-    archiveIndexPath,
-    archiveIndex,
-    `Update archive index for ${dayKey}`,
-    archiveIndexFile.exists ? archiveIndexFile.sha : undefined
-  );
+  await mutateArchiveIndex(profileKey, (index) => ({
+    ...index,
+    sessions: [
+      ...index.sessions.filter((session) => session.path !== archivePath),
+      summary
+    ]
+  }), `Update archive index for ${dayKey}`);
 
   for (const source of sourceFiles) {
     await deleteGitHubFile(
@@ -829,23 +965,38 @@ async function pruneArchiveForProfile(profileKey, archiveRetentionDays) {
   const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
   if (!archiveIndexFile.exists) return;
 
-  const kept = [];
-  for (const session of archiveIndexFile.data.sessions || []) {
-    if (isWithinRetention(session.timestamp, archiveRetentionDays)) {
-      kept.push(session);
-      continue;
+  const archiveIndex = normalizeArchiveIndex(profileKey, archiveIndexFile.data);
+  const needsPathMigration = archiveIndex.sessions.some(
+    (session, index) =>
+      session.path !== archiveIndexFile.data?.sessions?.[index]?.path
+  );
+  const expired = archiveIndex.sessions.filter(
+    (session) => !isWithinRetention(session.timestamp, archiveRetentionDays)
+  );
+  if (expired.length === 0) {
+    if (needsPathMigration) {
+      await mutateArchiveIndex(
+        profileKey,
+        (index) => index,
+        "Normalize legacy archive index paths"
+      );
     }
+    return;
+  }
+
+  for (const session of expired) {
     const file = await fetchGitHubJson(session.path);
     if (file.exists) {
       await deleteGitHubFile(session.path, file.sha, "Delete expired archive snapshot");
     }
   }
-  await putGitHubJson(
-    archiveIndexPath,
-    { ...archiveIndexFile.data, sessions: kept },
-    "Apply archive retention",
-    archiveIndexFile.sha
-  );
+  const expiredPaths = new Set(expired.map((session) => session.path));
+  await mutateArchiveIndex(profileKey, (index) => ({
+    ...index,
+    sessions: index.sessions.filter(
+      (session) => !expiredPaths.has(session.path)
+    )
+  }), "Apply archive retention");
 }
 
 async function disposePrunedSessions(prunedSessions) {
@@ -854,6 +1005,7 @@ async function disposePrunedSessions(prunedSessions) {
   });
   const timelineDays = new Map();
   const profiles = new Set();
+  const failures = [];
 
   for (const session of prunedSessions) {
     try {
@@ -868,6 +1020,7 @@ async function disposePrunedSessions(prunedSessions) {
       }
     } catch (error) {
       console.warn("Failed to apply retention to session:", session.path, error);
+      failures.push(`${session.path}: ${error.message}`);
     }
   }
 
@@ -878,11 +1031,20 @@ async function disposePrunedSessions(prunedSessions) {
       profiles.add(profileKey);
     } catch (error) {
       console.warn("Failed to archive timeline day:", dayKey, error);
+      failures.push(`${dayKey}: ${error.message}`);
     }
   }
 
   for (const profileKey of profiles) {
-    await pruneArchiveForProfile(profileKey, archiveRetention);
+    try {
+      await pruneArchiveForProfile(profileKey, archiveRetention);
+    } catch (error) {
+      failures.push(`${profileKey} archive retention: ${error.message}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`Retention incomplete (${failures.length} failure(s)): ${failures[0]}`);
   }
 }
 
@@ -906,6 +1068,21 @@ async function readSessionSummary(path, sha) {
     path,
     sha || file.sha
   );
+}
+
+async function listTimelineSessionFiles(path, depth = 0) {
+  const directory = await listGitHubDirectory(path);
+  if (!directory.exists) return [];
+
+  const files = [];
+  for (const entry of directory.entries) {
+    if (isLegacySessionFile(entry)) {
+      files.push(entry);
+    } else if (entry.type === "dir" && depth < 4) {
+      files.push(...await listTimelineSessionFiles(entry.path, depth + 1));
+    }
+  }
+  return files;
 }
 
 async function buildIndexFromRepository() {
@@ -967,15 +1144,11 @@ async function buildIndexFromRepository() {
           }
         }
 
-        const timelineDir = await listGitHubDirectory(
+        const timelineFiles = await listTimelineSessionFiles(
           `${clientRootPath}/history/timeline`
         );
 
-        for (const timelineFile of timelineDir.entries) {
-          if (!isLegacySessionFile(timelineFile)) {
-            continue;
-          }
-
+        for (const timelineFile of timelineFiles) {
           const summary = await readSessionSummary(
             timelineFile.path,
             timelineFile.sha
@@ -1022,6 +1195,35 @@ async function buildIndexFromRepository() {
   });
 }
 
+async function replaceSessionIndexSafely(
+  sessions,
+  timelineRetention,
+  message,
+  scanStartedAt
+) {
+  let retained = applyRetention(sessions, timelineRetention);
+  let finalIndex;
+
+  await putGitHubJson(INDEX_PATH, null, message, undefined, {
+    conflictResolver: async (currentData) => {
+      const currentIndex = normalizeIndex(currentData || { sessions: [] });
+      const indexChangedDuringScan =
+        scanStartedAt &&
+        currentIndex.updatedAt &&
+        new Date(currentIndex.updatedAt) > new Date(scanStartedAt);
+      const repositorySessions = indexChangedDuringScan
+        ? (await buildIndexFromRepository()).sessions
+        : sessions;
+      retained = applyRetention(repositorySessions, timelineRetention);
+      finalIndex = normalizeIndex({ sessions: retained.kept });
+      finalIndex.updatedAt = new Date().toISOString();
+      return finalIndex;
+    }
+  });
+
+  return { ...retained, index: finalIndex };
+}
+
 async function loadSessionIndex() {
   const indexFile =
     await fetchGitHubJson(INDEX_PATH);
@@ -1036,51 +1238,36 @@ async function loadSessionIndex() {
     }
   }
 
+  const scanStartedAt = new Date().toISOString();
   const rebuiltIndex = await buildIndexFromRepository();
   const { timelineRetention } = await chrome.storage.sync.get({
     timelineRetention: 10
   });
-  const { kept, pruned } = applyRetention(
+  const retained = await replaceSessionIndexSafely(
     rebuiltIndex.sessions,
-    timelineRetention
-  );
-  const retainedIndex = normalizeIndex({
-    sessions: kept,
-    updatedAt: new Date().toISOString()
-  });
-
-  await putGitHubJson(
-    INDEX_PATH,
-    retainedIndex,
+    timelineRetention,
     "Rebuild session index",
-    indexFile.exists ? indexFile.sha : undefined
+    scanStartedAt
   );
-  await disposePrunedSessions(pruned);
+  await disposePrunedSessions(retained.pruned);
 
-  return retainedIndex;
+  return retained.index;
 }
 
 async function reconcileRepositoryRetention() {
   try {
+    const scanStartedAt = new Date().toISOString();
     const rebuiltIndex = await buildIndexFromRepository();
     const { timelineRetention } = await chrome.storage.sync.get({
       timelineRetention: 10
     });
-    const { kept, pruned } = applyRetention(
+    const retained = await replaceSessionIndexSafely(
       rebuiltIndex.sessions,
-      timelineRetention
-    );
-    const indexFile = await fetchGitHubJson(INDEX_PATH);
-    await putGitHubJson(
-      INDEX_PATH,
-      normalizeIndex({
-        sessions: kept,
-        updatedAt: new Date().toISOString()
-      }),
+      timelineRetention,
       "Reconcile session retention",
-      indexFile.exists ? indexFile.sha : undefined
+      scanStartedAt
     );
-    await disposePrunedSessions(pruned);
+    await disposePrunedSessions(retained.pruned);
 
     const rootDir = await listGitHubDirectory(SESSIONS_DIR);
     const { archiveRetention } = await chrome.storage.sync.get({
@@ -1091,10 +1278,30 @@ async function reconcileRepositoryRetention() {
         await pruneArchiveForProfile(entry.name, archiveRetention);
       }
     }
-    return { success: true, pruned: pruned.length };
+    await chrome.storage.local.set({
+      lastRetentionRun: new Date().toISOString()
+    });
+    return { success: true, pruned: retained.pruned.length };
   } catch (error) {
     console.error("Retention reconciliation failed:", error);
     return { success: false, error: error.message };
+  }
+}
+
+async function runDailyRetentionIfDue() {
+  const { lastRetentionRun } = await chrome.storage.local.get(
+    "lastRetentionRun"
+  );
+  if (
+    lastRetentionRun &&
+    getLocalDayKey(lastRetentionRun) === getLocalDayKey(new Date().toISOString())
+  ) {
+    return;
+  }
+
+  const result = await reconcileRepositoryRetention();
+  if (!result.success) {
+    console.warn("Daily retention did not complete:", result.error);
   }
 }
 
@@ -1104,47 +1311,36 @@ async function reconcileRepositoryRetention() {
  */
 async function updateIndexWithNewSessions(newSummaries) {
   const { timelineRetention } = await chrome.storage.sync.get({ timelineRetention: 10 });
-  
-  // 1. Fetch the MOST RECENT index from GitHub right now.
-  const indexFile = await fetchGitHubJson(INDEX_PATH);
-  const normalized = indexFile.exists ? normalizeIndex(indexFile.data) : { sessions: [] };
-  
-  // 2. Identify and filter out any existing sessions that share the same path as our new ones.
-  const newPaths = new Set(newSummaries.map(s => s.path));
-  const withoutDuplicates = normalized.sessions.filter(s => !newPaths.has(s.path));
-  
-  // 3. Merge new ones in.
-  const merged = [
-    ...newSummaries,
-    ...withoutDuplicates
-  ];
-  
-  // 4. Apply retention logic to the merged result.
-  const { kept, pruned } = applyRetention(merged, timelineRetention);
-  
-  // 5. Save the final "kept" list back to GitHub.
-  const nextIndex = normalizeIndex({
-    sessions: kept,
-    updatedAt: new Date().toISOString()
-  });
+  let retained = { kept: [], pruned: [] };
+  await mutateSessionIndex((currentIndex) => {
+    const newPaths = new Set(newSummaries.map((session) => session.path));
+    const merged = [
+      ...newSummaries,
+      ...currentIndex.sessions.filter((session) => !newPaths.has(session.path))
+    ];
+    retained = applyRetention(merged, timelineRetention);
+    return { ...currentIndex, sessions: retained.kept };
+  }, "Update session index (conflict-safe merge)");
 
-  await putGitHubJson(
-    INDEX_PATH,
-    nextIndex,
-    "Update session index (Atomic merge)",
-    indexFile.exists ? indexFile.sha : undefined
-  );
+  await disposePrunedSessions(retained.pruned);
 
-  // 6. Timelines expire permanently; regular snapshots go to the archive.
-  await disposePrunedSessions(pruned);
-
-  return { kept, pruned };
+  return retained;
 }
 
-// Keep the old function name as a wrapper for backward compatibility if needed, 
-// but we'll migrate calls to updateIndexWithNewSessions.
-async function saveSessionIndex(indexData) {
-  return await updateIndexWithNewSessions(indexData.sessions || []);
+async function removeSessionFromIndex(path) {
+  return await mutateSessionIndex((index) => ({
+    ...index,
+    sessions: index.sessions.filter((session) => session.path !== path)
+  }), "Remove session from active index");
+}
+
+async function updateSessionInIndex(path, updates) {
+  return await mutateSessionIndex((index) => ({
+    ...index,
+    sessions: index.sessions.map((session) =>
+      session.path === path ? { ...session, ...updates } : session
+    )
+  }), "Update session metadata in active index");
 }
 
 async function computeSessionSignature(
@@ -1189,20 +1385,6 @@ async function computeSessionSignature(
     .join("");
 }
 
-function isSameCalendarDay(
-  isoA,
-  isoB
-) {
-  if (!isoA || !isoB) {
-    return false;
-  }
-
-  return (
-    isoA.slice(0, 10) ===
-    isoB.slice(0, 10)
-  );
-}
-
 function shouldSaveTab(tab, excludeLocalTabs) {
   const url = tab.url || tab.pendingUrl || "";
 
@@ -1228,7 +1410,22 @@ function shouldSaveTab(tab, excludeLocalTabs) {
   }
 }
 
-async function saveSessionToGitHub(
+function getLastTimelineSignature(index, profileKey, clientId) {
+  return index.sessions
+    .filter((session) =>
+      session.profileKey === profileKey &&
+      session.clientId === clientId &&
+      session.kind === "timeline"
+    )
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]
+    ?.signature || null;
+}
+
+function saveSessionToGitHub(options = {}) {
+  return enqueueMutation(() => performSaveSessionToGitHub(options));
+}
+
+async function performSaveSessionToGitHub(
   options = {}
 ) {
   try {
@@ -1251,6 +1448,12 @@ async function saveSessionToGitHub(
     );
     const friendlyName = options.friendlyName || null;
     const pinned = Boolean(options.pinned);
+
+    // Retention must continue even when the tabs never change. Limit the full
+    // repository reconciliation to once per local calendar day.
+    if (options.runRetention) {
+      await runDailyRetentionIfDue();
+    }
 
     const windows =
       await chrome.windows.getAll({
@@ -1302,7 +1505,8 @@ async function saveSessionToGitHub(
       latestSignature !== signature;
 
     sessionData.signature = signature;
-    const historyPath = `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}.json`;
+    const uniqueSuffix = crypto.randomUUID().slice(0, 8);
+    const historyPath = `${SESSIONS_DIR}/${profileStorageKey}/history/session-${Date.now()}-${uniqueSuffix}.json`;
 
     const latestSessionData = {
       ...sessionData,
@@ -1318,9 +1522,11 @@ async function saveSessionToGitHub(
     // 1. Timeline Skip Detection:
     // Compare against the last timeline entry — not latest.json, which is updated by every regular sync.
     if (isTimeline && !forceSnapshot) {
-      const lastTimelineSignature = currentIndex.sessions
-        .filter(s => s.profileKey === profileStorageKey && s.kind === "timeline")
-        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]?.signature || null;
+      const lastTimelineSignature = getLastTimelineSignature(
+        currentIndex,
+        profileStorageKey,
+        clientId
+      );
       
       if (signature === lastTimelineSignature) {
         console.log("Timeline skip: Session content identical to last timeline snapshot.");
@@ -1345,17 +1551,28 @@ async function saveSessionToGitHub(
 
     // 2. Global Baseline Update:
     // Update latest.json ONLY if there's a global change.
-    if (hasChanged || forceSnapshot) {
+    if (hasChanged) {
       console.log(`Updating global baseline (latest.json)... hasChanged=${hasChanged}`);
+      let committedLatestData = latestSessionData;
       const latestResponse = await putGitHubJson(
         latestPath,
-        latestSessionData,
+        null,
         isTimeline ? `Update baseline (Timeline pulse) for ${alias}` : `Update latest session for ${alias}`,
-        latestFile.exists ? latestFile.sha : undefined
+        undefined,
+        {
+          conflictResolver: (currentData) => {
+            committedLatestData =
+              currentData?.timestamp &&
+              new Date(currentData.timestamp) > new Date(latestSessionData.timestamp)
+                ? currentData
+                : latestSessionData;
+            return committedLatestData;
+          }
+        }
       );
 
       latestSummary = buildSessionSummary(
-        latestSessionData,
+        committedLatestData,
         latestPath,
         latestResponse.content.sha,
         "latest"
@@ -1375,7 +1592,13 @@ async function saveSessionToGitHub(
 
     // A. Handle Timeline/Pulse creation
     if (createTimelinePulse) {
-      const timelinePath = `${SESSIONS_DIR}/${profileStorageKey}/history/timeline/session-${Date.now()}.json`;
+      const timelineDate = new Date(sessionData.timestamp);
+      const timelinePartition = [
+        timelineDate.getUTCFullYear(),
+        String(timelineDate.getUTCMonth() + 1).padStart(2, "0"),
+        String(timelineDate.getUTCDate()).padStart(2, "0")
+      ].join("/");
+      const timelinePath = `${SESSIONS_DIR}/${profileStorageKey}/history/timeline/${timelinePartition}/session-${Date.now()}-${uniqueSuffix}.json`;
       const timelineResponse =
         await putGitHubJson(
           timelinePath,
@@ -1392,15 +1615,13 @@ async function saveSessionToGitHub(
         );
     }
 
-    // B. Handle daily/manual history creation
+    // B. Handle a manual history snapshot.
     let finalHistoryPath = historyPath;
     if (createHistorySnapshot) {
       const historyResponse = await putGitHubJson(
         historyPath,
         sessionData,
-        forceSnapshot
-          ? `Create manual snapshot for ${alias}`
-          : `Create daily snapshot for ${alias}`
+        `Create manual snapshot for ${alias}`
       );
 
       historySummary = buildSessionSummary(
@@ -1443,11 +1664,9 @@ async function saveSessionToGitHub(
         createTimelinePulse || createHistorySnapshot,
       snapshotReason: forceSnapshot
         ? "manual"
-        : createHistorySnapshot
-          ? "daily"
-          : createTimelinePulse
-            ? "pulse"
-            : "update"
+        : createTimelinePulse
+          ? "pulse"
+          : "update"
     };
   } catch (error) {
     console.error(
@@ -1632,7 +1851,9 @@ async function setupTimelineAlarm(intervalMinutes) {
 
 function isTransientError(result) {
   if (!result || result.success) return false;
-  return /40[78]|429|5\d\d/.test(result.error || "");
+  return /40[78]|409|422|429|5\d\d|\bsha\b|conflict|expected/i.test(
+    result.error || ""
+  );
 }
 
 /**
@@ -1642,9 +1863,9 @@ chrome.alarms.onAlarm.addListener(
   async (alarm) => {
     const options =
       alarm.name === "timelineSync"
-        ? { isTimeline: true }
+        ? { isTimeline: true, runRetention: true }
         : alarm.name === "sessionSync"
-          ? {}
+          ? { runRetention: true }
           : null;
 
     if (options === null) return;
@@ -1677,8 +1898,6 @@ async function archiveSession(sessionSummary) {
     .split("/")
     .pop();
   const archivePath = `${SESSIONS_DIR}/${profileKey}/archive/${year}/${month}/${filename}`;
-  const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
-
   // 1. Fetch the data if it's not already in the summary (summary is just metadata).
   const sessionFile =
     await fetchGitHubJson(
@@ -1696,30 +1915,22 @@ async function archiveSession(sessionSummary) {
     throw new Error("Timeline snapshots expire or can be deleted; they cannot be archived");
   }
 
-  const sessionDataToArchive = {
-    ...sessionFile.data,
-    pinned: false
-  };
+  const sessionDataToArchive = { ...sessionFile.data, pinned: false };
 
   // 2. Put into archive, updating an existing target when a prior retry got
   // that far. This makes archive moves idempotent.
-  const archiveFile = await fetchGitHubJson(archivePath);
   await putGitHubJson(
     archivePath,
-    sessionDataToArchive,
+    null,
     `Archive session snapshot ${filename} to ${year}/${month}`,
-    archiveFile.exists ? archiveFile.sha : undefined
+    undefined,
+    {
+      conflictResolver: (currentData) => ({
+        ...(currentData || {}),
+        ...sessionDataToArchive
+      })
+    }
   );
-
-  // 3. Update archive index.
-  const archiveIndexFile =
-    await fetchGitHubJson(
-      archiveIndexPath
-    );
-  const archiveIndex =
-    archiveIndexFile.exists
-      ? archiveIndexFile.data
-      : { sessions: [] };
 
   const newSummary = {
     ...sessionSummary,
@@ -1728,25 +1939,13 @@ async function archiveSession(sessionSummary) {
     sha: undefined // SHA will be fresh in archive.
   };
 
-  archiveIndex.sessions = (archiveIndex.sessions || []).filter(
-    (session) => session.path !== archivePath
-  );
-  archiveIndex.sessions.push(newSummary);
-  // Keep index sorted by timestamp (newest first).
-  archiveIndex.sessions.sort(
-    (a, b) =>
-      new Date(b.timestamp) -
-      new Date(a.timestamp)
-  );
-
-  await putGitHubJson(
-    archiveIndexPath,
-    archiveIndex,
-    `Update archive index for ${year}/${month}`,
-    archiveIndexFile.exists
-      ? archiveIndexFile.sha
-      : undefined
-  );
+  await mutateArchiveIndex(profileKey, (index) => ({
+    ...index,
+    sessions: [
+      ...index.sessions.filter((session) => session.path !== archivePath),
+      newSummary
+    ]
+  }), `Update archive index for ${year}/${month}`);
 
   // 4. Delete the original history file.
   await deleteGitHubFile(
@@ -1775,13 +1974,7 @@ async function handleManualArchive(
     await archiveSession(sessionSummary);
 
     // 2. Remove from the active index.
-    const index = await loadSessionIndex();
-    index.sessions =
-      index.sessions.filter(
-        (s) => s.path !== sessionSummary.path
-      );
-
-    await saveSessionIndex(index);
+    await removeSessionFromIndex(sessionSummary.path);
 
     return { success: true };
   } catch (error) {
@@ -1808,7 +2001,6 @@ async function handleUnarchiveSession(sessionSummary) {
     const historyPath = isTimeline
       ? `${SESSIONS_DIR}/${profileKey}/history/timeline/${filename}`
       : `${SESSIONS_DIR}/${profileKey}/history/${filename}`;
-    const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
 
     // 1. Fetch from archive
     const sessionFile = await fetchGitHubJson(sessionSummary.path);
@@ -1823,19 +2015,12 @@ async function handleUnarchiveSession(sessionSummary) {
     );
 
     // 3. Remove from archive_index
-    const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
-    if (archiveIndexFile.exists) {
-      const archiveIndex = archiveIndexFile.data;
-      archiveIndex.sessions = archiveIndex.sessions.filter(
-        (s) => s.path !== sessionSummary.path
-      );
-      await putGitHubJson(
-        archiveIndexPath,
-        archiveIndex,
-        "Update archive index after unarchiving",
-        archiveIndexFile.sha
-      );
-    }
+    await mutateArchiveIndex(profileKey, (index) => ({
+      ...index,
+      sessions: index.sessions.filter(
+        (session) => session.path !== sessionSummary.path
+      )
+    }), "Update archive index after unarchiving");
 
     // 4. Delete the file from archive folder
     await deleteGitHubFile(
@@ -1845,7 +2030,6 @@ async function handleUnarchiveSession(sessionSummary) {
     );
 
     // 5. Add to active index
-    const index = await loadSessionIndex();
     const newSummary = {
       ...sessionSummary,
       path: historyPath,
@@ -1853,11 +2037,7 @@ async function handleUnarchiveSession(sessionSummary) {
       sha: historyResponse.content.sha
     };
     
-    // remove any duplicates just in case
-    index.sessions = index.sessions.filter(s => s.path !== historyPath);
-    index.sessions.push(newSummary);
-    index.sessions.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    await saveSessionIndex(index);
+    await updateIndexWithNewSessions([newSummary]);
 
     return { success: true };
   } catch (error) {
@@ -1888,35 +2068,14 @@ async function handleManualDelete(
       const profileKey =
         sessionSummary.profileKey ||
         (await getProfileStorageKey());
-      const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
-      const archiveIndexFile =
-        await fetchGitHubJson(
-          archiveIndexPath
-        );
-
-      if (archiveIndexFile.exists) {
-        const archiveIndex =
-          archiveIndexFile.data;
-        archiveIndex.sessions =
-          archiveIndex.sessions.filter(
-            (s) =>
-              s.path !== sessionSummary.path
-          );
-        await putGitHubJson(
-          archiveIndexPath,
-          archiveIndex,
-          "Update archive index after manual delete",
-          archiveIndexFile.sha
-        );
-      }
+      await mutateArchiveIndex(profileKey, (index) => ({
+        ...index,
+        sessions: index.sessions.filter(
+          (session) => session.path !== sessionSummary.path
+        )
+      }), "Update archive index after manual delete");
     } else {
-      const index = await loadSessionIndex();
-      index.sessions =
-        index.sessions.filter(
-          (s) =>
-            s.path !== sessionSummary.path
-        );
-      await saveSessionIndex(index);
+      await removeSessionFromIndex(sessionSummary.path);
     }
 
     return { success: true };
@@ -1953,12 +2112,13 @@ async function handleArchiveSearch(request) {
 
   for (const profileKey of profileKeys) {
     const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
-    const archiveIndexFile =
-      await fetchGitHubJson(archiveIndexPath);
+    const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
 
     if (archiveIndexFile.exists) {
-      const sessions =
-        archiveIndexFile.data.sessions || [];
+      const sessions = normalizeArchiveIndex(
+        profileKey,
+        archiveIndexFile.data
+      ).sessions;
       allArchivedSessions.push(...sessions);
     }
   }
@@ -2004,41 +2164,37 @@ async function handleRenameSession(sessionPath, newName) {
     const file = await fetchGitHubJson(sessionPath);
     if (!file.exists) throw new Error("Session file not found");
 
-    const sessionData = file.data;
-    sessionData.friendlyName = newName || null;
+    const friendlyName = newName || null;
 
-    const response = await putGitHubJson(
+    await putGitHubJson(
       sessionPath,
-      sessionData,
+      null,
       `Rename session to ${newName || "default"}`,
-      file.sha
+      undefined,
+      {
+        conflictResolver: (currentData) => ({
+          ...(currentData || file.data),
+          friendlyName
+        })
+      }
     );
 
     const isArchived = sessionPath.includes("/archive/");
     const profileKey = sessionPath.split("/")[1];
 
     if (isArchived) {
-      const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
-      const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
-      if (archiveIndexFile.exists) {
-        const sessionIndex = archiveIndexFile.data.sessions.findIndex(s => s.path === sessionPath);
-        if (sessionIndex !== -1) {
-          archiveIndexFile.data.sessions[sessionIndex].friendlyName = sessionData.friendlyName;
-          await putGitHubJson(
-            archiveIndexPath,
-            archiveIndexFile.data,
-            `Rename archived session summary`,
-            archiveIndexFile.sha
-          );
-        }
-      }
+      await mutateArchiveIndex(profileKey, (index) => ({
+        ...index,
+        sessions: index.sessions.map((session) =>
+          session.path === sessionPath
+            ? { ...session, friendlyName }
+            : session
+        )
+      }), "Rename archived session summary");
     } else {
-      const index = await loadSessionIndex();
-      const sessionIndex = index.sessions.findIndex(s => s.path === sessionPath);
-      if (sessionIndex !== -1) {
-        index.sessions[sessionIndex].friendlyName = sessionData.friendlyName;
-        await saveSessionIndex(index);
-      }
+      await updateSessionInIndex(sessionPath, {
+        friendlyName
+      });
     }
     return { success: true };
   } catch (error) {
@@ -2052,41 +2208,35 @@ async function handleToggleSessionPin(sessionPath, isPinned) {
     const file = await fetchGitHubJson(sessionPath);
     if (!file.exists) throw new Error("Session file not found");
 
-    const sessionData = file.data;
-    sessionData.pinned = isPinned;
-
-    const response = await putGitHubJson(
+    await putGitHubJson(
       sessionPath,
-      sessionData,
+      null,
       `${isPinned ? "Pin" : "Unpin"} session`,
-      file.sha
+      undefined,
+      {
+        conflictResolver: (currentData) => ({
+          ...(currentData || file.data),
+          pinned: isPinned
+        })
+      }
     );
 
     const isArchived = sessionPath.includes("/archive/");
     const profileKey = sessionPath.split("/")[1];
 
     if (isArchived) {
-      const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
-      const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
-      if (archiveIndexFile.exists) {
-        const sessionIndex = archiveIndexFile.data.sessions.findIndex(s => s.path === sessionPath);
-        if (sessionIndex !== -1) {
-          archiveIndexFile.data.sessions[sessionIndex].pinned = sessionData.pinned;
-          await putGitHubJson(
-            archiveIndexPath,
-            archiveIndexFile.data,
-            `Toggle pin on archived session summary`,
-            archiveIndexFile.sha
-          );
-        }
-      }
+      await mutateArchiveIndex(profileKey, (index) => ({
+        ...index,
+        sessions: index.sessions.map((session) =>
+          session.path === sessionPath
+            ? { ...session, pinned: isPinned }
+            : session
+        )
+      }), "Toggle pin on archived session summary");
     } else {
-      const index = await loadSessionIndex();
-      const sessionIndex = index.sessions.findIndex(s => s.path === sessionPath);
-      if (sessionIndex !== -1) {
-        index.sessions[sessionIndex].pinned = sessionData.pinned;
-        await saveSessionIndex(index);
-      }
+      await updateSessionInIndex(sessionPath, {
+        pinned: isPinned
+      });
     }
     return { success: true };
   } catch (error) {
@@ -2129,3 +2279,18 @@ chrome.runtime.onInstalled.addListener(
     console.error("Service Worker initialization failed:", error);
   }
 })();
+
+// Expose deterministic logic to the repository's Node test suite. `module` is
+// undefined in the Chrome service worker, so this has no runtime effect there.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    applyRetention,
+    buildTimelineArchiveData,
+    canonicalizeSessionPath,
+    getLastTimelineSignature,
+    isWithinRetention,
+    normalizeArchiveIndex,
+    normalizeIndex,
+    putGitHubJson
+  };
+}

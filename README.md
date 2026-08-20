@@ -2,10 +2,12 @@
 
 A Chrome Extension (Manifest V3) that syncs browser sessions to a private GitHub repository and restores them across machines.
 
-It is designed around two separate concepts:
+It is designed around four separate concepts:
 
-- `Current session`: the latest state of a profile, continuously updated
-- `Snapshots`: explicit or daily history checkpoints
+- `Saved`: one current session plus snapshots you explicitly save, name, or pin
+- `Timeline`: automatic, change-only snapshots used to reconstruct recent activity
+- `Archive`: expired Timeline days compacted to one deduplicated file per day, plus older Saved snapshots
+- `Profile folder`: the shared storage key; several computers may use the same folder while keeping different display names
 
 ## Features
 
@@ -14,7 +16,8 @@ It is designed around two separate concepts:
 - Sync the current browser session to GitHub
 - Restore saved sessions from any configured profile
 - Save manual snapshots for important checkpoints
-- Create at most one automatic history snapshot per day per profile
+- Record Timeline snapshots only when that computer's tab set changed
+- Configure separate Timeline and Archive retention periods
 
 ### Multi-Profile Support
 
@@ -45,7 +48,7 @@ It is designed around two separate concepts:
 
 ## How It Works
 
-### Current Session vs Snapshot
+### Saved
 
 `Update Current`
 
@@ -55,23 +58,33 @@ It is designed around two separate concepts:
 
 `Save Snapshot`
 
-- Forces a history checkpoint immediately
+- Always creates one uniquely named manual checkpoint
+- Appears in Saved and remains distinguishable by computer (`Profile Name`)
+- Does not create a Timeline entry
 
-Automatic daily snapshot
+Pinned items
 
-- When the current session is updated, a history snapshot is created only if:
-  - there is no snapshot yet for that profile, or
-  - the latest snapshot for that profile is from a different calendar day
+- Pinning a Timeline item moves it into Saved in the UI
+- Pinned items are exempt from active-history retention
 
-This keeps GitHub storage manageable while still preserving useful history.
+### Timeline
 
-### History and Archiving
+- Runs at the configured Timeline interval
+- Creates a file only if the current computer's tab set differs from its own last Timeline entry
+- Keeps detailed entries for the configured number of days
+- Partitions new files by UTC year/month/day so a shared profile folder does not exceed GitHub's directory listing limit
 
-The extension maintains an "Active History" of up to **30 snapshots** per profile (defined by `MAX_HISTORY_PER_CLIENT` in `background.js`).
+### Archive
 
-- **Active History**: The most recent 30 snapshots are kept in the `history/` folder for quick access in the main popup view.
-- **Automatic Archiving**: Once a profile exceeds 30 snapshots, the oldest ones are automatically moved to a permanent archive folder structured by year and month.
-- **Archive Search**: Archived sessions can be searched and restored using the 📂 **View Archive** button in the popup.
+When a Timeline day passes the configured Timeline retention:
+
+- all snapshots for that profile and day are combined
+- URLs are deduplicated
+- first/last-seen times are retained
+- exactly one `day-YYYY-MM-DD.json` archive file represents that day
+- the original detailed Timeline files are deleted only after the daily archive and its index are saved
+
+Compact daily archives are deleted after the configured Archive retention period. The active Saved history also keeps up to 30 unpinned snapshots per profile; older ones are moved into the archive and are subject to the same Archive retention. Archive search and restore are available through **View Archive**.
 
 ## Repository Structure
 
@@ -84,12 +97,13 @@ repository/
     ├── {profileFolder}/
     │   ├── latest.json
     │   ├── history/
-    │   │   └── session-{timestamp}.json (max 30)
+    │   │   ├── session-{timestamp}-{id}.json (manual Saved snapshot)
+    │   │   └── timeline/
+    │   │       └── {YYYY}/{MM}/{DD}/session-{timestamp}-{id}.json
     │   └── archive/
     │       ├── archive_index.json
-    │       └── {YYYY}/
-    │           └── {MM}/
-    │               └── session-{timestamp}.json
+    │       ├── timeline/{YYYY}/{MM}/day-{YYYY-MM-DD}.json
+    │       └── {YYYY}/{MM}/session-{timestamp}.json
     └── {otherProfile}/
         ...
 ```
@@ -100,12 +114,16 @@ repository/
   - compact shared index for active sessions across all profiles
 - `sessions/{profileFolder}/latest.json`
   - current live state for that profile
-- `sessions/{profileFolder}/history/session-{timestamp}.json`
-  - active snapshots (last 30)
+- `sessions/{profileFolder}/history/session-{timestamp}-{id}.json`
+  - explicit Saved snapshots (up to 30 unpinned entries per profile)
+- `sessions/{profileFolder}/history/timeline/{YYYY}/{MM}/{DD}/session-{timestamp}-{id}.json`
+  - recent detailed Timeline snapshots
 - `sessions/{profileFolder}/archive/archive_index.json`
   - searchable index for that profile's archived sessions
 - `sessions/{profileFolder}/archive/{YYYY}/{MM}/session-{timestamp}.json`
-  - permanent historical snapshots
+  - older Saved snapshots, retained for the configured Archive period
+- `sessions/{profileFolder}/archive/timeline/{YYYY}/{MM}/day-{YYYY-MM-DD}.json`
+  - one deduplicated URL set for an expired Timeline day
 
 ### Session JSON Format
 
@@ -182,10 +200,15 @@ If you want a shorter install walkthrough, see [QUICKSTART.md](./QUICKSTART.md).
 | `GitHub Username`       | GitHub account that owns the repository                                   |
 | `Repository Name`       | Private repository used for storage                                       |
 | `Personal Access Token` | GitHub token used for API access                                          |
-| `Profile Name`          | Human-readable display name shown in the UI                               |
-| `Profile Folder`        | Stable folder key used in GitHub paths, for example `work-laptop`         |
+| `Profile Name`          | Per-computer display name, for example `Mainframe` or `WorkPC`            |
+| `Profile Folder`        | Shared, lowercase storage key; use the same value to group computers      |
 | `Auto-sync Interval`    | Minutes between automatic current-session updates, `0` disables auto-sync |
+| `Timeline Interval`     | Minutes between change checks for Timeline, `0` disables it               |
+| `Timeline Retention`    | Days to keep detailed Timeline files before daily compaction              |
+| `Archive Retention`     | Days to keep archived Saved snapshots and compact Timeline days           |
 | `Client ID`             | Internal auto-generated identifier stored locally                         |
+
+If three computers use Profile Folder `rtm`, they share one `sessions/rtm/latest.json`; the newest write is Current. Their Timeline and manual Saved files remain separate and retain each computer's Profile Name and local Client ID.
 
 ## Popup Behavior
 
@@ -252,13 +275,12 @@ The extension supports explicit light and dark themes.
 ```text
 browser-session-sync-codex/
 ├── manifest.json
-├── background.js
-├── popup.html
-├── popup.js
-├── options.html
-├── options.js
-├── styles.css
-├── images/
+├── src/
+│   ├── background/background.js
+│   ├── popup/{popup.html,popup.js}
+│   ├── options/{options.html,options.js}
+│   └── styles/styles.css
+├── assets/icons/
 └── README.md
 ```
 
@@ -268,7 +290,8 @@ browser-session-sync-codex/
 
 - handles GitHub API access
 - stores and updates `latest.json`
-- creates daily/manual snapshots
+- creates manual and Timeline snapshots
+- compacts expired Timeline days and applies archive retention
 - maintains `sessions/index.json`
 - restores sessions
 - manages auto-sync alarms

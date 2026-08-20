@@ -273,9 +273,14 @@ async function saveSettings() {
       });
     }
 
-    await chrome.runtime.sendMessage({
+    const retentionResponse = await chrome.runtime.sendMessage({
       action: "runRetention"
     });
+    if (!retentionResponse?.success) {
+      throw new Error(
+        `Retention cleanup failed: ${retentionResponse?.error || "Unknown error"}`
+      );
+    }
 
     showMessage(
       "✅ Settings saved. Triggering initial sync...",

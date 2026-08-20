@@ -319,15 +319,15 @@ function applyFilters() {
     const isExplicitSave =
       session.isManualSnapshot ||
       session.pinned ||
-      session.friendlyName;
+      (session.kind === "history" && session.friendlyName);
 
-    if (
+    if (session.kind === "latest" || isExplicitSave) {
+      activeSessions.push(session);
+    } else if (
       session.kind === "timeline" ||
-      (session.kind === "history" && !isExplicitSave)
+      session.kind === "history"
     ) {
       timelineSessions.push(session);
-    } else if (session.kind === "latest" || isExplicitSave) {
-      activeSessions.push(session);
     }
   }
 
@@ -728,13 +728,19 @@ function createSessionElement(session) {
     getSessionKind(session);
   const isLatest = kind === "latest";
   const isToday = date.toDateString() === new Date().toDateString();
+  const isExplicitSave =
+    session.isManualSnapshot ||
+    session.pinned ||
+    (kind === "history" && session.friendlyName);
   const kindLabel =
     isLatest
       ? "Current"
+      : kind === "timelineArchive"
+        ? "Timeline day"
+      : isExplicitSave
+        ? "Saved"
       : kind === "timeline"
         ? "Timeline"
-        : session.isManualSnapshot || session.pinned || session.friendlyName
-          ? "Saved"
         : isToday
           ? "Today's Snapshot"
           : "Snapshot";
@@ -1311,7 +1317,7 @@ async function archiveSessionManually(
 ) {
   if (
     !confirm(
-      "Move this session to the permanent archive?"
+      "Move this session to the retained archive?"
     )
   ) {
     return;
