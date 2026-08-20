@@ -9,7 +9,7 @@
 
 const SESSIONS_DIR = "sessions";
 const INDEX_PATH = `${SESSIONS_DIR}/index.json`;
-const MAX_HISTORY_PER_CLIENT = 30;
+const MAX_SAVED_PER_PROFILE = 30;
 const MAX_WRITE_ATTEMPTS = 7;
 
 let mutationQueue = Promise.resolve();
@@ -282,6 +282,13 @@ function slugifyProfileKey(value) {
     .slice(0, 80);
 }
 
+function normalizeProfileName(value) {
+  return (value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase();
+}
+
 async function getProfileStorageKey() {
   const clientId =
     await initializeClientId();
@@ -307,14 +314,14 @@ async function getProfileStorageKey() {
 
 async function getProfileDisplayName() {
   const local = await chrome.storage.local.get("profileName");
-  if (local.profileName) return local.profileName;
+  if (local.profileName) return local.profileName.trim().replace(/\s+/g, " ");
 
   // Migrate the pre-1.4.6 value. Profile names must be local so computers
   // sharing a Chrome account and Profile Folder can retain distinct aliases.
   const legacy = await chrome.storage.sync.get("profileName");
   if (legacy.profileName) {
     await chrome.storage.local.set({ profileName: legacy.profileName });
-    return legacy.profileName;
+    return legacy.profileName.trim().replace(/\s+/g, " ");
   }
   return "";
 }
@@ -741,11 +748,15 @@ function buildSessionSummary(
   const tabs = sessionData.windows.flatMap(
     (windowData) => windowData.tabs
   );
-  const sourceAliases = [...new Set(
-    (sessionData.timelineSources || [])
-      .map((source) => source.browserAlias)
-      .filter(Boolean)
-  )];
+  const sourceAliasesByName = new Map();
+  for (const source of sessionData.timelineSources || []) {
+    const alias = source.browserAlias?.trim();
+    const normalizedAlias = normalizeProfileName(alias);
+    if (normalizedAlias && !sourceAliasesByName.has(normalizedAlias)) {
+      sourceAliasesByName.set(normalizedAlias, alias);
+    }
+  }
+  const sourceAliases = [...sourceAliasesByName.values()];
 
   return {
     path,
@@ -827,13 +838,13 @@ function applyRetention(
     }
 
     const key =
-      session.clientId ||
       session.profileKey ||
+      session.clientId ||
       "unknown";
     const count =
       countByClient.get(key) || 0;
 
-    if (count < MAX_HISTORY_PER_CLIENT) {
+    if (count < MAX_SAVED_PER_PROFILE) {
       keptHistory.push(session);
       countByClient.set(key, count + 1);
     } else {
@@ -2422,6 +2433,7 @@ if (typeof module !== "undefined" && module.exports) {
     isWithinRetention,
     normalizeArchiveIndex,
     normalizeIndex,
+    normalizeProfileName,
     performSaveSessionToGitHub,
     putGitHubJson
   };

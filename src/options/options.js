@@ -256,7 +256,7 @@ async function saveSettings() {
   }
 
   try {
-    // Profile Name is deliberately device-local. Everything else may sync.
+    // The app's Profile Name belongs to this extension installation.
     const { profileName, ...syncedSettings } = settings;
     await Promise.all([
       chrome.storage.sync.set(syncedSettings),

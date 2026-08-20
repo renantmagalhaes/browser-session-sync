@@ -111,6 +111,13 @@ function getSessionAlias(session) {
   );
 }
 
+function normalizeProfileName(value) {
+  return (value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase();
+}
+
 function getSessionWindowCount(session) {
   if (
     typeof session.windowCount ===
@@ -216,15 +223,21 @@ function populateProfileFilter() {
     const alias = getSessionAlias(session);
 
     if (!profileMap.has(key)) {
-      profileMap.set(key, new Set());
+      profileMap.set(key, new Map());
     }
-    profileMap.get(key).add(alias);
+    const normalizedAlias = normalizeProfileName(alias);
+    if (!profileMap.get(key).has(normalizedAlias)) {
+      profileMap.get(key).set(normalizedAlias, alias);
+    }
   }
 
   const sortedProfiles = Array.from(
     profileMap.entries()
   )
-    .map(([key, aliases]) => [key, [...aliases].sort().join(", ")])
+    .map(([key, aliases]) => [
+      key,
+      [...aliases.values()].sort((a, b) => a.localeCompare(b)).join(", ")
+    ])
     .sort((a, b) => a[1].localeCompare(b[1]));
 
   filterEl.innerHTML = "";

@@ -50,6 +50,7 @@ const {
   handleManualDelete,
   normalizeArchiveIndex,
   normalizeIndex,
+  normalizeProfileName,
   performSaveSessionToGitHub,
   putGitHubJson
 } = require("../src/background/background.js");
@@ -240,7 +241,7 @@ test("timeline deduplication compares each computer with its own last entry", ()
   );
 });
 
-test("device-local Profile Name overrides the legacy synchronized name", async () => {
+test("the app Profile Name for this installation overrides the legacy stored value", async () => {
   const originalLocalGet = chrome.storage.local.get;
   const originalSyncGet = chrome.storage.sync.get;
   chrome.storage.local.get = async () => ({ profileName: "WorkPC" });
@@ -251,6 +252,27 @@ test("device-local Profile Name overrides the legacy synchronized name", async (
     chrome.storage.local.get = originalLocalGet;
     chrome.storage.sync.get = originalSyncGet;
   }
+});
+
+test("Profile Name comparisons normalize case and whitespace", () => {
+  assert.equal(normalizeProfileName(" RTM  "), normalizeProfileName("rtm"));
+  assert.notEqual(
+    normalizeProfileName("Mainframe"),
+    normalizeProfileName("WorkPC")
+  );
+
+  const summary = buildSessionSummary({
+    timestamp: "2026-08-20T10:00:00Z",
+    browserAlias: "RTM",
+    profileKey: "rtm",
+    clientId: null,
+    windows: [],
+    timelineSources: [
+      { clientId: "one", browserAlias: "RTM" },
+      { clientId: "two", browserAlias: "rtm" }
+    ]
+  }, "sessions/rtm/archive/timeline/day.json", "sha", "timelineArchive");
+  assert.equal(summary.browserAlias, "RTM");
 });
 
 test("normalizes and deduplicates active index entries by path", () => {
@@ -317,7 +339,7 @@ test("Saved retention deletes only old unpinned snapshots when enabled", () => {
   assert.deepEqual(disabled.deleted, []);
 });
 
-test("Saved count retention is isolated per computer in a shared folder", () => {
+test("Saved count retention is shared by the Profile Folder", () => {
   const timestamp = new Date().toISOString();
   const entries = [
     ...Array.from({ length: 31 }, (_, index) => ({
@@ -336,15 +358,8 @@ test("Saved count retention is isolated per computer in a shared folder", () => 
     }
   ];
   const result = applyRetention(entries, 10, 0);
-  assert.equal(
-    result.kept.filter((entry) => entry.clientId === "mainframe").length,
-    30
-  );
-  assert.equal(
-    result.kept.filter((entry) => entry.clientId === "workpc").length,
-    1
-  );
-  assert.equal(result.pruned.length, 1);
+  assert.equal(result.kept.length, 30);
+  assert.equal(result.pruned.length, 2);
 });
 
 test("manual delete rejects the shared Current file", async () => {
