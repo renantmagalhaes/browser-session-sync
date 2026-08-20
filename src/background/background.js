@@ -119,6 +119,9 @@ async function handleMessage(request) {
       await setupTimelineAlarm(request.intervalMinutes);
       return { success: true };
 
+    case "runRetention":
+      return await reconcileRepositoryRetention();
+
     case "archiveSessionManually":
       console.log(
         "Processing archiveSessionManually"
@@ -694,6 +697,23 @@ function applyRetention(
   };
 }
 
+function getLocalDayKey(timestamp) {
+  const date = new Date(timestamp);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join("-");
+}
+
+function isWithinRetention(timestamp, retentionDays) {
+  const today = new Date();
+  const date = new Date(timestamp);
+  today.setHours(0, 0, 0, 0);
+  date.setHours(0, 0, 0, 0);
+  return Math.floor((today - date) / 86400000) < retentionDays;
+}
+
 async function deleteTimelineSession(sessionSummary) {
   const sessionFile = await fetchGitHubJson(sessionSummary.path);
 
@@ -708,17 +728,161 @@ async function deleteTimelineSession(sessionSummary) {
   );
 }
 
+async function archiveTimelineDay(profileKey, dayKey, sessions) {
+  const sourceFiles = [];
+  for (const session of sessions) {
+    const file = await fetchGitHubJson(session.path);
+    if (file.exists) {
+      sourceFiles.push({ summary: session, ...file });
+    }
+  }
+
+  if (sourceFiles.length === 0) return;
+
+  sourceFiles.sort(
+    (a, b) => new Date(a.data.timestamp) - new Date(b.data.timestamp)
+  );
+  const latest = sourceFiles.at(-1).data;
+  const [year, month] = dayKey.split("-");
+  const archivePath = `${SESSIONS_DIR}/${profileKey}/archive/timeline/${year}/${month}/day-${dayKey}.json`;
+  const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+  const archiveFile = await fetchGitHubJson(archivePath);
+  const tabsByUrl = new Map();
+  let snapshotCount = archiveFile.exists
+    ? archiveFile.data.timelineSnapshotCount || 0
+    : 0;
+
+  const addTabs = (sessionData) => {
+    for (const windowData of sessionData.windows || []) {
+      for (const tab of windowData.tabs || []) {
+        if (!tab.url) continue;
+        const existing = tabsByUrl.get(tab.url);
+        tabsByUrl.set(tab.url, {
+          title: tab.title || existing?.title || "Untitled",
+          url: tab.url,
+          active: false,
+          firstSeenAt: existing?.firstSeenAt || sessionData.timestamp,
+          lastSeenAt: sessionData.timestamp
+        });
+      }
+    }
+  };
+
+  if (archiveFile.exists) addTabs(archiveFile.data);
+  for (const source of sourceFiles) addTabs(source.data);
+  snapshotCount += sourceFiles.length;
+
+  const archiveData = {
+    ...latest,
+    timestamp: latest.timestamp,
+    isTimeline: false,
+    isTimelineArchive: true,
+    timelineDate: dayKey,
+    timelineSnapshotCount: snapshotCount,
+    friendlyName: null,
+    pinned: false,
+    windows: [{ id: null, tabs: [...tabsByUrl.values()] }]
+  };
+  archiveData.signature = await computeSessionSignature(archiveData);
+
+  const response = await putGitHubJson(
+    archivePath,
+    archiveData,
+    `Archive deduplicated timeline for ${dayKey}`,
+    archiveFile.exists ? archiveFile.sha : undefined
+  );
+  const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
+  const archiveIndex = archiveIndexFile.exists
+    ? archiveIndexFile.data
+    : { sessions: [] };
+  const summary = buildSessionSummary(
+    archiveData,
+    archivePath,
+    response.content.sha,
+    "timelineArchive"
+  );
+  archiveIndex.sessions = (archiveIndex.sessions || []).filter(
+    (session) => session.path !== archivePath
+  );
+  archiveIndex.sessions.push(summary);
+  archiveIndex.sessions.sort(
+    (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+  );
+  await putGitHubJson(
+    archiveIndexPath,
+    archiveIndex,
+    `Update archive index for ${dayKey}`,
+    archiveIndexFile.exists ? archiveIndexFile.sha : undefined
+  );
+
+  for (const source of sourceFiles) {
+    await deleteGitHubFile(
+      source.summary.path,
+      source.sha,
+      `Archive timeline snapshot into ${dayKey}`
+    );
+  }
+}
+
+async function pruneArchiveForProfile(profileKey, archiveRetentionDays) {
+  const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
+  const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
+  if (!archiveIndexFile.exists) return;
+
+  const kept = [];
+  for (const session of archiveIndexFile.data.sessions || []) {
+    if (isWithinRetention(session.timestamp, archiveRetentionDays)) {
+      kept.push(session);
+      continue;
+    }
+    const file = await fetchGitHubJson(session.path);
+    if (file.exists) {
+      await deleteGitHubFile(session.path, file.sha, "Delete expired archive snapshot");
+    }
+  }
+  await putGitHubJson(
+    archiveIndexPath,
+    { ...archiveIndexFile.data, sessions: kept },
+    "Apply archive retention",
+    archiveIndexFile.sha
+  );
+}
+
 async function disposePrunedSessions(prunedSessions) {
+  const { archiveRetention } = await chrome.storage.sync.get({
+    archiveRetention: 90
+  });
+  const timelineDays = new Map();
+  const profiles = new Set();
+
   for (const session of prunedSessions) {
     try {
       if (session.kind === "timeline") {
-        await deleteTimelineSession(session);
+        const key = `${session.profileKey}|${getLocalDayKey(session.timestamp)}`;
+        const grouped = timelineDays.get(key) || [];
+        grouped.push(session);
+        timelineDays.set(key, grouped);
       } else {
         await archiveSession(session);
+        profiles.add(session.profileKey);
       }
     } catch (error) {
       console.warn("Failed to apply retention to session:", session.path, error);
     }
+  }
+
+  for (const [key, sessions] of timelineDays) {
+    const [profileKey, dayKey] = key.split("|");
+    try {
+      await archiveTimelineDay(profileKey, dayKey, sessions);
+      profiles.add(profileKey);
+    } catch (error) {
+      console.warn("Failed to archive timeline day:", dayKey, error);
+    }
+  }
+
+  for (const profileKey of profiles) {
+    await pruneArchiveForProfile(profileKey, archiveRetention);
   }
 }
 
@@ -792,7 +956,12 @@ async function buildIndexFromRepository() {
               );
 
             if (summary) {
-              summary.kind = "history";
+              summary.kind =
+                !summary.isManualSnapshot &&
+                !summary.pinned &&
+                !summary.friendlyName
+                  ? "timeline"
+                  : "history";
               summaries.push(summary);
             }
           }
@@ -891,12 +1060,50 @@ async function loadSessionIndex() {
   return retainedIndex;
 }
 
+async function reconcileRepositoryRetention() {
+  try {
+    const rebuiltIndex = await buildIndexFromRepository();
+    const { timelineRetention } = await chrome.storage.sync.get({
+      timelineRetention: 10
+    });
+    const { kept, pruned } = applyRetention(
+      rebuiltIndex.sessions,
+      timelineRetention
+    );
+    const indexFile = await fetchGitHubJson(INDEX_PATH);
+    await putGitHubJson(
+      INDEX_PATH,
+      normalizeIndex({
+        sessions: kept,
+        updatedAt: new Date().toISOString()
+      }),
+      "Reconcile session retention",
+      indexFile.exists ? indexFile.sha : undefined
+    );
+    await disposePrunedSessions(pruned);
+
+    const rootDir = await listGitHubDirectory(SESSIONS_DIR);
+    const { archiveRetention } = await chrome.storage.sync.get({
+      archiveRetention: 90
+    });
+    for (const entry of rootDir.entries) {
+      if (entry.type === "dir") {
+        await pruneArchiveForProfile(entry.name, archiveRetention);
+      }
+    }
+    return { success: true, pruned: pruned.length };
+  } catch (error) {
+    console.error("Retention reconciliation failed:", error);
+    return { success: false, error: error.message };
+  }
+}
+
 /**
  * Atomic update to INDEX_PATH to prevent race conditions from overlapping syncs.
  * Fetches latest index, merges new entries, applies retention, and pushes back.
  */
 async function updateIndexWithNewSessions(newSummaries) {
-  const { timelineRetention } = await chrome.storage.sync.get({ timelineRetention: 2 });
+  const { timelineRetention } = await chrome.storage.sync.get({ timelineRetention: 10 });
   
   // 1. Fetch the MOST RECENT index from GitHub right now.
   const indexFile = await fetchGitHubJson(INDEX_PATH);
@@ -1108,31 +1315,6 @@ async function saveSessionToGitHub(
     let latestSummary = null;
 
     const currentIndex = await loadSessionIndex();
-    const currentProfileHistory =
-      currentIndex.sessions
-        .filter(
-          (session) =>
-            session.profileKey ===
-              profileStorageKey &&
-            session.kind === "history"
-        )
-        .sort(
-          (a, b) =>
-            new Date(b.timestamp) -
-            new Date(a.timestamp)
-        );
-    const mostRecentUnpinnedSnapshot =
-      currentProfileHistory.find(
-        (session) => !session.pinned && !session.isManualSnapshot
-      );
-
-    const hasAutomaticSnapshotToday =
-      mostRecentUnpinnedSnapshot &&
-      isSameCalendarDay(
-        mostRecentUnpinnedSnapshot.timestamp,
-        sessionData.timestamp
-      );
-
     // 1. Timeline Skip Detection:
     // Compare against the last timeline entry — not latest.json, which is updated by every regular sync.
     if (isTimeline && !forceSnapshot) {
@@ -1155,8 +1337,7 @@ async function saveSessionToGitHub(
     if (
       !hasChanged &&
       !forceSnapshot &&
-      !isTimeline &&
-      hasAutomaticSnapshotToday
+      !isTimeline
     ) {
        console.log("Sync skip: No changes since last backup and not a timeline pulse.");
        return { success: true, skipped: true, message: "No changes to backup." };
@@ -1185,10 +1366,9 @@ async function saveSessionToGitHub(
     // creates one history entry, never an additional timeline entry.
     const createTimelinePulse = isTimeline;
 
-    // Automatic history is a checkpoint: create at most one per calendar day.
-    // Manual snapshots are always explicit new history entries.
-    const createHistorySnapshot =
-      !isTimeline && (forceSnapshot || !hasAutomaticSnapshotToday);
+    // The Timeline owns automatic history. The Saved view contains only
+    // explicit manual snapshots.
+    const createHistorySnapshot = forceSnapshot;
 
     let historySummary = null;
     let timelineSummary = null;

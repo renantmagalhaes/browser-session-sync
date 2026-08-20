@@ -52,6 +52,7 @@ async function loadSettings() {
       "syncInterval",
       "timelineInterval",
       "timelineRetention",
+      "archiveRetention",
       "excludeLocalTabs",
       "lastSyncTime",
       "dateFormat"
@@ -115,6 +116,10 @@ async function loadSettings() {
     document.getElementById(
       "timelineRetention"
     ).value = settings.timelineRetention;
+  }
+  if (settings.archiveRetention !== undefined) {
+    document.getElementById("archiveRetention").value =
+      settings.archiveRetention;
   }
   if (settings.excludeLocalTabs) {
     document.getElementById(
@@ -214,6 +219,10 @@ async function saveSettings() {
       ).value,
       10
     ),
+    archiveRetention: parseInt(
+      document.getElementById("archiveRetention").value,
+      10
+    ),
     excludeLocalTabs:
       document.getElementById(
         "excludeLocalTabs"
@@ -263,6 +272,10 @@ async function saveSettings() {
         intervalMinutes: 0
       });
     }
+
+    await chrome.runtime.sendMessage({
+      action: "runRetention"
+    });
 
     showMessage(
       "✅ Settings saved. Triggering initial sync...",

@@ -278,17 +278,6 @@ function getFilteredSessions() {
       return false;
     }
 
-    const kind = getSessionKind(session);
-    if (kind === "history") {
-      const date = new Date(getSessionTimestamp(session));
-      const isToday = date.toDateString() === new Date().toDateString();
-      const isRollingSnapshot = !session.pinned && !session.friendlyName;
-      if (isToday && isRollingSnapshot) {
-        // Today's rolling daily history is hidden in favor of the "Current State" at the top.
-        return false;
-      }
-    }
-
     if (!searchTerm) {
       return true;
     }
@@ -327,9 +316,17 @@ function applyFilters() {
   const timelineSessions = [];
   
   for (const session of filtered) {
-    if (session.kind === "timeline") {
+    const isExplicitSave =
+      session.isManualSnapshot ||
+      session.pinned ||
+      session.friendlyName;
+
+    if (
+      session.kind === "timeline" ||
+      (session.kind === "history" && !isExplicitSave)
+    ) {
       timelineSessions.push(session);
-    } else {
+    } else if (session.kind === "latest" || isExplicitSave) {
       activeSessions.push(session);
     }
   }
@@ -736,6 +733,8 @@ function createSessionElement(session) {
       ? "Current"
       : kind === "timeline"
         ? "Timeline"
+        : session.isManualSnapshot || session.pinned || session.friendlyName
+          ? "Saved"
         : isToday
           ? "Today's Snapshot"
           : "Snapshot";
@@ -901,7 +900,9 @@ function createSessionElement(session) {
     };
 
     archiveActionsGroup.appendChild(renameBtnArchive);
-    archiveActionsGroup.appendChild(unarchiveBtn);
+    if (kind !== "timelineArchive") {
+      archiveActionsGroup.appendChild(unarchiveBtn);
+    }
     archiveActionsGroup.appendChild(deleteBtn);
 
     manualActions.appendChild(archiveActionsGroup);
