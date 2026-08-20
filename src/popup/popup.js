@@ -859,7 +859,9 @@ function createSessionElement(session) {
 
     actionsGroup.appendChild(renameBtn);
     actionsGroup.appendChild(pinBtn);
-    actionsGroup.appendChild(archiveBtn);
+    if (kind !== "timeline") {
+      actionsGroup.appendChild(archiveBtn);
+    }
     actionsGroup.appendChild(deleteBtn);
 
     manualActions.appendChild(actionsGroup);
