@@ -759,7 +759,8 @@ function buildSessionSummary(
 
 function applyRetention(
   sessionEntries,
-  timelineRetentionDays = 10
+  timelineRetentionDays = 10,
+  savedRetentionDays = 0
 ) {
   const pinned = sessionEntries.filter(
     (session) => session.kind === "latest" || session.pinned
@@ -770,6 +771,7 @@ function applyRetention(
     );
   const keptHistory = [];
   const pruned = [];
+  const deleted = [];
   const countByClient = new Map();
 
   const sorted = [...historyEntries].sort(
@@ -795,6 +797,14 @@ function applyRetention(
       continue;
     }
 
+    if (
+      savedRetentionDays > 0 &&
+      !isWithinRetention(session.timestamp, savedRetentionDays)
+    ) {
+      deleted.push(session);
+      continue;
+    }
+
     const key =
       session.profileKey ||
       session.clientId ||
@@ -812,7 +822,8 @@ function applyRetention(
 
   return {
     kept: [...pinned, ...keptHistory],
-    pruned
+    pruned,
+    deleted
   };
 }
 
@@ -1048,6 +1059,47 @@ async function disposePrunedSessions(prunedSessions) {
   }
 }
 
+async function deleteExpiredSavedSessions(expiredSessions) {
+  const failures = [];
+  for (const session of expiredSessions) {
+    try {
+      const file = await fetchGitHubJson(session.path);
+      if (file.exists) {
+        await deleteGitHubFile(
+          session.path,
+          file.sha,
+          `Delete expired Saved snapshot: ${session.path}`
+        );
+      }
+    } catch (error) {
+      failures.push(`${session.path}: ${error.message}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      `Saved retention incomplete (${failures.length} failure(s)): ${failures[0]}`
+    );
+  }
+}
+
+async function disposeRetentionResult(retained) {
+  const failures = [];
+  try {
+    await disposePrunedSessions(retained.pruned || []);
+  } catch (error) {
+    failures.push(error.message);
+  }
+  try {
+    await deleteExpiredSavedSessions(retained.deleted || []);
+  } catch (error) {
+    failures.push(error.message);
+  }
+  if (failures.length > 0) {
+    throw new Error(failures.join("; "));
+  }
+}
+
 function isLegacySessionFile(entry) {
   return (
     entry.type === "file" &&
@@ -1198,10 +1250,15 @@ async function buildIndexFromRepository() {
 async function replaceSessionIndexSafely(
   sessions,
   timelineRetention,
+  savedRetention,
   message,
   scanStartedAt
 ) {
-  let retained = applyRetention(sessions, timelineRetention);
+  let retained = applyRetention(
+    sessions,
+    timelineRetention,
+    savedRetention
+  );
   let finalIndex;
 
   await putGitHubJson(INDEX_PATH, null, message, undefined, {
@@ -1214,7 +1271,11 @@ async function replaceSessionIndexSafely(
       const repositorySessions = indexChangedDuringScan
         ? (await buildIndexFromRepository()).sessions
         : sessions;
-      retained = applyRetention(repositorySessions, timelineRetention);
+      retained = applyRetention(
+        repositorySessions,
+        timelineRetention,
+        savedRetention
+      );
       finalIndex = normalizeIndex({ sessions: retained.kept });
       finalIndex.updatedAt = new Date().toISOString();
       return finalIndex;
@@ -1240,16 +1301,18 @@ async function loadSessionIndex() {
 
   const scanStartedAt = new Date().toISOString();
   const rebuiltIndex = await buildIndexFromRepository();
-  const { timelineRetention } = await chrome.storage.sync.get({
-    timelineRetention: 10
+  const { timelineRetention, savedRetention } = await chrome.storage.sync.get({
+    timelineRetention: 10,
+    savedRetention: 0
   });
   const retained = await replaceSessionIndexSafely(
     rebuiltIndex.sessions,
     timelineRetention,
+    savedRetention,
     "Rebuild session index",
     scanStartedAt
   );
-  await disposePrunedSessions(retained.pruned);
+  await disposeRetentionResult(retained);
 
   return retained.index;
 }
@@ -1258,16 +1321,18 @@ async function reconcileRepositoryRetention() {
   try {
     const scanStartedAt = new Date().toISOString();
     const rebuiltIndex = await buildIndexFromRepository();
-    const { timelineRetention } = await chrome.storage.sync.get({
-      timelineRetention: 10
+    const { timelineRetention, savedRetention } = await chrome.storage.sync.get({
+      timelineRetention: 10,
+      savedRetention: 0
     });
     const retained = await replaceSessionIndexSafely(
       rebuiltIndex.sessions,
       timelineRetention,
+      savedRetention,
       "Reconcile session retention",
       scanStartedAt
     );
-    await disposePrunedSessions(retained.pruned);
+    await disposeRetentionResult(retained);
 
     const rootDir = await listGitHubDirectory(SESSIONS_DIR);
     const { archiveRetention } = await chrome.storage.sync.get({
@@ -1281,7 +1346,11 @@ async function reconcileRepositoryRetention() {
     await chrome.storage.local.set({
       lastRetentionRun: new Date().toISOString()
     });
-    return { success: true, pruned: retained.pruned.length };
+    return {
+      success: true,
+      archived: retained.pruned.length,
+      deleted: retained.deleted.length
+    };
   } catch (error) {
     console.error("Retention reconciliation failed:", error);
     return { success: false, error: error.message };
@@ -1310,19 +1379,22 @@ async function runDailyRetentionIfDue() {
  * Fetches latest index, merges new entries, applies retention, and pushes back.
  */
 async function updateIndexWithNewSessions(newSummaries) {
-  const { timelineRetention } = await chrome.storage.sync.get({ timelineRetention: 10 });
-  let retained = { kept: [], pruned: [] };
+  const { timelineRetention, savedRetention } = await chrome.storage.sync.get({
+    timelineRetention: 10,
+    savedRetention: 0
+  });
+  let retained = { kept: [], pruned: [], deleted: [] };
   await mutateSessionIndex((currentIndex) => {
     const newPaths = new Set(newSummaries.map((session) => session.path));
     const merged = [
       ...newSummaries,
       ...currentIndex.sessions.filter((session) => !newPaths.has(session.path))
     ];
-    retained = applyRetention(merged, timelineRetention);
+    retained = applyRetention(merged, timelineRetention, savedRetention);
     return { ...currentIndex, sessions: retained.kept };
   }, "Update session index (conflict-safe merge)");
 
-  await disposePrunedSessions(retained.pruned);
+  await disposeRetentionResult(retained);
 
   return retained;
 }
@@ -2287,6 +2359,7 @@ if (typeof module !== "undefined" && module.exports) {
     applyRetention,
     buildTimelineArchiveData,
     canonicalizeSessionPath,
+    deleteExpiredSavedSessions,
     getLastTimelineSignature,
     isWithinRetention,
     normalizeArchiveIndex,

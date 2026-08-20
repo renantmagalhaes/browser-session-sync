@@ -218,6 +218,22 @@
           </div>
 
           <div class="form-group">
+            <label for="savedRetention">Saved Snapshot Retention (days):</label>
+            <input
+              type="number"
+              id="savedRetention"
+              min="0"
+              max="3650"
+              value="0"
+            />
+            <small>
+              Permanently delete unpinned Saved snapshots after this many days.
+              Set to 0 to keep them until manually deleted or archived. Current
+              and pinned snapshots are never deleted by this setting.
+            </small>
+          </div>
+
+          <div class="form-group">
             <label for="archiveRetention">Archive Retention (days):</label>
             <input type="number" id="archiveRetention" min="1" max="3650" value="90" />
             <small>

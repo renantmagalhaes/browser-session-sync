@@ -52,6 +52,7 @@ async function loadSettings() {
       "syncInterval",
       "timelineInterval",
       "timelineRetention",
+      "savedRetention",
       "archiveRetention",
       "excludeLocalTabs",
       "lastSyncTime",
@@ -116,6 +117,10 @@ async function loadSettings() {
     document.getElementById(
       "timelineRetention"
     ).value = settings.timelineRetention;
+  }
+  if (settings.savedRetention !== undefined) {
+    document.getElementById("savedRetention").value =
+      settings.savedRetention;
   }
   if (settings.archiveRetention !== undefined) {
     document.getElementById("archiveRetention").value =
@@ -217,6 +222,10 @@ async function saveSettings() {
       document.getElementById(
         "timelineRetention"
       ).value,
+      10
+    ),
+    savedRetention: parseInt(
+      document.getElementById("savedRetention").value,
       10
     ),
     archiveRetention: parseInt(

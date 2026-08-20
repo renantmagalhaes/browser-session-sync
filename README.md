@@ -61,6 +61,7 @@ It is designed around four separate concepts:
 - Always creates one uniquely named manual checkpoint
 - Appears in Saved and remains distinguishable by computer (`Profile Name`)
 - Does not create a Timeline entry
+- Unpinned Saved snapshots can be automatically deleted after a configurable number of days; `0` disables age-based deletion
 
 Pinned items
 
@@ -205,6 +206,7 @@ If you want a shorter install walkthrough, see [QUICKSTART.md](./QUICKSTART.md).
 | `Auto-sync Interval`    | Minutes between automatic current-session updates, `0` disables auto-sync |
 | `Timeline Interval`     | Minutes between change checks for Timeline, `0` disables it               |
 | `Timeline Retention`    | Days to keep detailed Timeline files before daily compaction              |
+| `Saved Retention`       | Days before unpinned Saved snapshots are deleted; `0` keeps them          |
 | `Archive Retention`     | Days to keep archived Saved snapshots and compact Timeline days           |
 | `Client ID`             | Internal auto-generated identifier stored locally                         |
 

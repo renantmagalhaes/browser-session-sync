@@ -43,6 +43,7 @@ const {
   applyRetention,
   buildTimelineArchiveData,
   canonicalizeSessionPath,
+  deleteExpiredSavedSessions,
   getLastTimelineSignature,
   normalizeArchiveIndex,
   normalizeIndex,
@@ -66,6 +67,7 @@ test("two consecutive manual snapshots create two Saved files without a second C
       profileKey: "rtm",
       excludeLocalTabs: false,
       timelineRetention: 10,
+      savedRetention: 0,
       archiveRetention: 30
     };
     if (typeof keys === "string") return { [keys]: settings[keys] };
@@ -263,6 +265,60 @@ test("retention keeps current and pinned items while pruning old timeline", () =
   const result = applyRetention(entries, 10);
   assert.deepEqual(result.kept.map((entry) => entry.path).sort(), ["latest", "pinned"]);
   assert.deepEqual(result.pruned.map((entry) => entry.path), ["old-timeline"]);
+  assert.deepEqual(result.deleted, []);
+});
+
+test("Saved retention deletes only old unpinned snapshots when enabled", () => {
+  const entries = [
+    { path: "latest", kind: "latest", timestamp: "2000-01-01T00:00:00Z" },
+    { path: "pinned", kind: "history", pinned: true, timestamp: "2000-01-01T00:00:00Z" },
+    { path: "old-saved", kind: "history", timestamp: "2000-01-01T00:00:00Z" },
+    { path: "recent-saved", kind: "history", timestamp: new Date().toISOString() }
+  ];
+  const result = applyRetention(entries, 10, 30);
+  assert.deepEqual(
+    result.kept.map((entry) => entry.path).sort(),
+    ["latest", "pinned", "recent-saved"]
+  );
+  assert.deepEqual(result.deleted.map((entry) => entry.path), ["old-saved"]);
+  assert.deepEqual(result.pruned, []);
+
+  const disabled = applyRetention(entries, 10, 0);
+  assert.deepEqual(disabled.deleted, []);
+});
+
+test("expired Saved retention removes the physical GitHub file", async () => {
+  const originalFetch = global.fetch;
+  let deleteBody;
+  global.fetch = async (_url, options = {}) => {
+    if (options.method === "DELETE") {
+      deleteBody = JSON.parse(options.body);
+      return { ok: true, status: 200, async json() { return {}; } };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          sha: "saved-sha",
+          size: 2,
+          encoding: "base64",
+          content: Buffer.from("{}").toString("base64")
+        };
+      }
+    };
+  };
+
+  try {
+    await deleteExpiredSavedSessions([{
+      path: "sessions/rtm/history/session-old.json"
+    }]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(deleteBody.sha, "saved-sha");
+  assert.match(deleteBody.message, /Delete expired Saved snapshot/);
 });
 
 test("conflict retry recomputes JSON from the newest remote value", async () => {
