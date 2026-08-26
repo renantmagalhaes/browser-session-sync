@@ -286,7 +286,7 @@ function normalizeProfileName(value) {
   return (value || "")
     .trim()
     .replace(/\s+/g, " ")
-    .toLocaleLowerCase();
+    .toLowerCase();
 }
 
 async function getProfileStorageKey() {
@@ -792,7 +792,8 @@ function buildSessionSummary(
 function applyRetention(
   sessionEntries,
   timelineRetentionDays = 10,
-  savedRetentionDays = 0
+  savedRetentionDays = 0,
+  timezone
 ) {
   const pinned = sessionEntries.filter(
     (session) => session.kind === "latest" || session.pinned
@@ -814,13 +815,11 @@ function applyRetention(
 
   for (const session of sorted) {
     if (session.kind === "timeline") {
-      const today = new Date();
-      const sessionDate = new Date(session.timestamp);
-      today.setHours(0,0,0,0);
-      sessionDate.setHours(0,0,0,0);
-      const diffTime = today - sessionDate;
-      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-      
+      const todayKey = getLocalDayKey(new Date().toISOString(), timezone);
+      const sessionKey = getLocalDayKey(session.timestamp, timezone);
+      const diffDays = Math.round(
+        (new Date(todayKey + "T00:00:00Z") - new Date(sessionKey + "T00:00:00Z")) / 86400000
+      );
       if (diffDays < timelineRetentionDays) {
         keptHistory.push(session);
       } else {
@@ -830,8 +829,9 @@ function applyRetention(
     }
 
     if (
+      session.kind === "history" &&
       savedRetentionDays > 0 &&
-      !isWithinRetention(session.timestamp, savedRetentionDays)
+      !isWithinRetention(session.timestamp, savedRetentionDays, timezone)
     ) {
       deleted.push(session);
       continue;
@@ -859,21 +859,24 @@ function applyRetention(
   };
 }
 
-function getLocalDayKey(timestamp) {
+function getLocalDayKey(timestamp, timezone) {
   const date = new Date(timestamp);
-  return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0")
-  ].join("-");
+  if (!timezone || timezone === "browser") {
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, "0"),
+      String(date.getDate()).padStart(2, "0")
+    ].join("-");
+  }
+  return new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(date);
 }
 
-function isWithinRetention(timestamp, retentionDays) {
-  const today = new Date();
-  const date = new Date(timestamp);
-  today.setHours(0, 0, 0, 0);
-  date.setHours(0, 0, 0, 0);
-  return Math.floor((today - date) / 86400000) < retentionDays;
+function isWithinRetention(timestamp, retentionDays, timezone) {
+  const todayKey = getLocalDayKey(new Date().toISOString(), timezone);
+  const sessionKey = getLocalDayKey(timestamp, timezone);
+  return Math.round(
+    (new Date(todayKey + "T00:00:00Z") - new Date(sessionKey + "T00:00:00Z")) / 86400000
+  ) < retentionDays;
 }
 
 async function buildTimelineArchiveData(
@@ -1020,7 +1023,7 @@ async function archiveTimelineDay(profileKey, dayKey, sessions) {
   }
 }
 
-async function pruneArchiveForProfile(profileKey, archiveRetentionDays) {
+async function pruneArchiveForProfile(profileKey, archiveRetentionDays, timezone) {
   const archiveIndexPath = `${SESSIONS_DIR}/${profileKey}/archive/archive_index.json`;
   const archiveIndexFile = await fetchGitHubJson(archiveIndexPath);
   if (!archiveIndexFile.exists) return;
@@ -1031,7 +1034,7 @@ async function pruneArchiveForProfile(profileKey, archiveRetentionDays) {
       session.path !== archiveIndexFile.data?.sessions?.[index]?.path
   );
   const expired = archiveIndex.sessions.filter(
-    (session) => !isWithinRetention(session.timestamp, archiveRetentionDays)
+    (session) => !isWithinRetention(session.timestamp, archiveRetentionDays, timezone)
   );
   if (expired.length === 0) {
     if (needsPathMigration) {
@@ -1060,9 +1063,11 @@ async function pruneArchiveForProfile(profileKey, archiveRetentionDays) {
 }
 
 async function disposePrunedSessions(prunedSessions) {
-  const { archiveRetention } = await chrome.storage.sync.get({
-    archiveRetention: 90
+  const { archiveRetention, userTimezone } = await chrome.storage.sync.get({
+    archiveRetention: 90,
+    userTimezone: "browser"
   });
+  const tz = userTimezone || "browser";
   const timelineDays = new Map();
   const profiles = new Set();
   const failures = [];
@@ -1070,7 +1075,7 @@ async function disposePrunedSessions(prunedSessions) {
   for (const session of prunedSessions) {
     try {
       if (session.kind === "timeline") {
-        const key = `${session.profileKey}|${getLocalDayKey(session.timestamp)}`;
+        const key = `${session.profileKey}|${getLocalDayKey(session.timestamp, tz)}`;
         const grouped = timelineDays.get(key) || [];
         grouped.push(session);
         timelineDays.set(key, grouped);
@@ -1097,7 +1102,7 @@ async function disposePrunedSessions(prunedSessions) {
 
   for (const profileKey of profiles) {
     try {
-      await pruneArchiveForProfile(profileKey, archiveRetention);
+      await pruneArchiveForProfile(profileKey, archiveRetention, tz);
     } catch (error) {
       failures.push(`${profileKey} archive retention: ${error.message}`);
     }
@@ -1127,7 +1132,7 @@ async function deleteExpiredSavedSessions(expiredSessions) {
 
   if (failures.length > 0) {
     throw new Error(
-      `Saved retention incomplete (${failures.length} failure(s)): ${failures[0]}`
+      `Saved retention incomplete (${failures.length} failure(s)): ${failures.join("; ")}`
     );
   }
 }
@@ -1301,12 +1306,14 @@ async function replaceSessionIndexSafely(
   timelineRetention,
   savedRetention,
   message,
-  scanStartedAt
+  scanStartedAt,
+  timezone
 ) {
   let retained = applyRetention(
     sessions,
     timelineRetention,
-    savedRetention
+    savedRetention,
+    timezone
   );
   let finalIndex;
 
@@ -1323,7 +1330,8 @@ async function replaceSessionIndexSafely(
       retained = applyRetention(
         repositorySessions,
         timelineRetention,
-        savedRetention
+        savedRetention,
+        timezone
       );
       finalIndex = normalizeIndex({ sessions: retained.kept });
       finalIndex.updatedAt = new Date().toISOString();
@@ -1350,16 +1358,18 @@ async function loadSessionIndex() {
 
   const scanStartedAt = new Date().toISOString();
   const rebuiltIndex = await buildIndexFromRepository();
-  const { timelineRetention, savedRetention } = await chrome.storage.sync.get({
+  const { timelineRetention, savedRetention, userTimezone } = await chrome.storage.sync.get({
     timelineRetention: 10,
-    savedRetention: 0
+    savedRetention: 0,
+    userTimezone: "browser"
   });
   const retained = await replaceSessionIndexSafely(
     rebuiltIndex.sessions,
     timelineRetention,
     savedRetention,
     "Rebuild session index",
-    scanStartedAt
+    scanStartedAt,
+    userTimezone || "browser"
   );
   await disposeRetentionResult(retained);
 
@@ -1370,26 +1380,29 @@ async function reconcileRepositoryRetention() {
   try {
     const scanStartedAt = new Date().toISOString();
     const rebuiltIndex = await buildIndexFromRepository();
-    const { timelineRetention, savedRetention } = await chrome.storage.sync.get({
+    const { timelineRetention, savedRetention, userTimezone } = await chrome.storage.sync.get({
       timelineRetention: 10,
-      savedRetention: 0
+      savedRetention: 0,
+      userTimezone: "browser"
     });
     const retained = await replaceSessionIndexSafely(
       rebuiltIndex.sessions,
       timelineRetention,
       savedRetention,
       "Reconcile session retention",
-      scanStartedAt
+      scanStartedAt,
+      userTimezone || "browser"
     );
     await disposeRetentionResult(retained);
 
     const rootDir = await listGitHubDirectory(SESSIONS_DIR);
-    const { archiveRetention } = await chrome.storage.sync.get({
-      archiveRetention: 90
+    const { archiveRetention, userTimezone: reconcileTz } = await chrome.storage.sync.get({
+      archiveRetention: 90,
+      userTimezone: "browser"
     });
     for (const entry of rootDir.entries) {
       if (entry.type === "dir") {
-        await pruneArchiveForProfile(entry.name, archiveRetention);
+        await pruneArchiveForProfile(entry.name, archiveRetention, reconcileTz || "browser");
       }
     }
     await chrome.storage.local.set({
@@ -1410,9 +1423,11 @@ async function runDailyRetentionIfDue() {
   const { lastRetentionRun } = await chrome.storage.local.get(
     "lastRetentionRun"
   );
+  const { userTimezone } = await chrome.storage.sync.get({ userTimezone: "browser" });
+  const tz = userTimezone || "browser";
   if (
     lastRetentionRun &&
-    getLocalDayKey(lastRetentionRun) === getLocalDayKey(new Date().toISOString())
+    getLocalDayKey(lastRetentionRun, tz) === getLocalDayKey(new Date().toISOString(), tz)
   ) {
     return;
   }
@@ -1428,10 +1443,12 @@ async function runDailyRetentionIfDue() {
  * Fetches latest index, merges new entries, applies retention, and pushes back.
  */
 async function updateIndexWithNewSessions(newSummaries) {
-  const { timelineRetention, savedRetention } = await chrome.storage.sync.get({
+  const { timelineRetention, savedRetention, userTimezone } = await chrome.storage.sync.get({
     timelineRetention: 10,
-    savedRetention: 0
+    savedRetention: 0,
+    userTimezone: "browser"
   });
+  const tz = userTimezone || "browser";
   let retained = { kept: [], pruned: [], deleted: [] };
   await mutateSessionIndex((currentIndex) => {
     const newPaths = new Set(newSummaries.map((session) => session.path));
@@ -1439,7 +1456,7 @@ async function updateIndexWithNewSessions(newSummaries) {
       ...newSummaries,
       ...currentIndex.sessions.filter((session) => !newPaths.has(session.path))
     ];
-    retained = applyRetention(merged, timelineRetention, savedRetention);
+    retained = applyRetention(merged, timelineRetention, savedRetention, tz);
     return { ...currentIndex, sessions: retained.kept };
   }, "Update session index (conflict-safe merge)");
 

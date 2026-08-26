@@ -8,15 +8,29 @@ let currentProfileKey = null;
 let currentTheme = "dark";
 let dateFormat = 'dmy';
 let selectedTimelineDay = "all"; // "all" or specific date string
+let userTimezone = "browser"; // "browser" uses the JS runtime timezone; otherwise an IANA name
+
+function _tzOpts() {
+  return (userTimezone && userTimezone !== "browser") ? { timeZone: userTimezone } : {};
+}
+
+// Returns "YYYY-MM-DD" for `date` in the configured timezone.
+function getLocalDateString(date) {
+  return new Intl.DateTimeFormat("en-CA", _tzOpts()).format(
+    date instanceof Date ? date : new Date(date)
+  );
+}
 
 function formatDate(date) {
-  const d = String(date.getDate()).padStart(2, '0');
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const y = date.getFullYear();
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  const ss = String(date.getSeconds()).padStart(2, '0');
-  const time = `${hh}:${mm}:${ss}`;
+  const parts = new Intl.DateTimeFormat("en", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+    ..._tzOpts()
+  }).formatToParts(date);
+  const get = (type) => parts.find(p => p.type === type)?.value ?? "00";
+  const d = get("day"), m = get("month"), y = get("year");
+  const time = `${get("hour")}:${get("minute")}:${get("second")}`;
   if (dateFormat === 'mdy') return `${m}/${d}/${y}, ${time}`;
   if (dateFormat === 'ymd') return `${y}-${m}-${d}, ${time}`;
   return `${d}/${m}/${y}, ${time}`;
@@ -28,9 +42,13 @@ const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','
 const SHORT_DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 function formatLongDate(date) {
-  const day = date.getDate();
-  const y = date.getFullYear();
-  const monthName = MONTH_NAMES[date.getMonth()];
+  const parts = new Intl.DateTimeFormat("en", {
+    year: "numeric", month: "long", day: "numeric",
+    ..._tzOpts()
+  }).formatToParts(date);
+  const day = parts.find(p => p.type === "day")?.value ?? "";
+  const monthName = parts.find(p => p.type === "month")?.value ?? "";
+  const y = parts.find(p => p.type === "year")?.value ?? "";
   if (dateFormat === 'mdy') return `${monthName} ${day}, ${y}`;
   if (dateFormat === 'ymd') return `${y}, ${monthName} ${day}`;
   return `${day} ${monthName} ${y}`;
@@ -115,7 +133,7 @@ function normalizeProfileName(value) {
   return (value || "")
     .trim()
     .replace(/\s+/g, " ")
-    .toLocaleLowerCase();
+    .toLowerCase();
 }
 
 function getSessionWindowCount(session) {
@@ -352,9 +370,9 @@ function applyFilters() {
   // Handle Timeline Filtering & Selector
   populateTimelineDayDropdown(timelineSessions);
   
-  const finalTimeline = selectedTimelineDay === "all" 
-    ? timelineSessions 
-    : timelineSessions.filter(s => new Date(getSessionTimestamp(s)).toDateString() === selectedTimelineDay);
+  const finalTimeline = selectedTimelineDay === "all"
+    ? timelineSessions
+    : timelineSessions.filter(s => getLocalDateString(new Date(getSessionTimestamp(s))) === selectedTimelineDay);
     
   displaySessions(finalTimeline, "timelineList");
 }
@@ -370,27 +388,31 @@ function populateTimelineDayDropdown(timelineSessions) {
   const getCompactLabel = (timestamp) => {
     const d = new Date(timestamp);
     const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
-    
-    if (d.toDateString() === today.toDateString()) return `Today (${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')})`;
-    if (d.toDateString() === yesterday.toDateString()) return `Yesterday (${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')})`;
-    
-    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const snapshotStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const dayDiff = Math.round((todayStart - snapshotStart) / (1000 * 60 * 60 * 24));
-    
-    const dateSuffix = ` (${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')})`;
+    const dKey = getLocalDateString(d);
+    const todayKey = getLocalDateString(today);
+    const dayDiff = Math.round(
+      (new Date(todayKey + "T00:00:00Z") - new Date(dKey + "T00:00:00Z")) / 86400000
+    );
+
+    const dmParts = new Intl.DateTimeFormat("en", {
+      day: "2-digit", month: "2-digit", ..._tzOpts()
+    }).formatToParts(d);
+    const dd = dmParts.find(p => p.type === "day")?.value ?? "00";
+    const mm = dmParts.find(p => p.type === "month")?.value ?? "00";
+    const dateSuffix = ` (${dd}/${mm})`;
+
+    if (dayDiff === 0) return `Today${dateSuffix}`;
+    if (dayDiff === 1) return `Yesterday${dateSuffix}`;
 
     if (dayDiff < 7) {
-      return DAY_NAMES[d.getDay()] + dateSuffix;
+      return new Intl.DateTimeFormat("en", { weekday: "long", ..._tzOpts() }).format(d) + dateSuffix;
     }
-    
+
     return formatLongDate(d);
   };
 
   timelineSessions.forEach(session => {
-    const dateStr = new Date(getSessionTimestamp(session)).toDateString();
+    const dateStr = getLocalDateString(new Date(getSessionTimestamp(session)));
     if (!daysMap.has(dateStr)) {
       daysMap.set(dateStr, getCompactLabel(getSessionTimestamp(session)));
     }
@@ -662,19 +684,18 @@ function displaySessions(
   const getGroupLabel = (timestamp) => {
     const d = new Date(timestamp);
     const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
+    const dKey = getLocalDateString(d);
+    const todayKey = getLocalDateString(today);
+    const dayDiff = Math.round(
+      (new Date(todayKey + "T00:00:00Z") - new Date(dKey + "T00:00:00Z")) / 86400000
+    );
 
-    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const snapshotStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const dayDiff = Math.round((todayStart - snapshotStart) / (1000 * 60 * 60 * 24));
+    if (dayDiff === 0) return "Today";
+    if (dayDiff === 1) return "Yesterday";
 
-    if (d.toDateString() === today.toDateString()) return "Today";
-    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-    
     // Within the last week (7 days), show the day name + relative days ago
     if (dayDiff < 7) {
-      const dayName = DAY_NAMES[d.getDay()];
+      const dayName = new Intl.DateTimeFormat("en", { weekday: "long", ..._tzOpts() }).format(d);
       return `${dayName} (${dayDiff} days ago)`;
     }
 
@@ -726,9 +747,11 @@ function createSessionElement(session) {
     document.createElement("div");
   div.className = "session-item";
 
-  const date = new Date(
-    getSessionTimestamp(session)
-  );
+  // For timelineArchive entries use timelineDate (local day string) as the anchor
+  // at UTC noon so formatDate displays the correct day in any timezone.
+  const date = (session.kind === "timelineArchive" && session.timelineDate)
+    ? new Date(session.timelineDate + "T12:00:00Z")
+    : new Date(getSessionTimestamp(session));
   const tabCount =
     getSessionTabCount(session);
   const windowCount =
@@ -745,7 +768,7 @@ function createSessionElement(session) {
   const kind =
     getSessionKind(session);
   const isLatest = kind === "latest";
-  const isToday = date.toDateString() === new Date().toDateString();
+  const isToday = getLocalDateString(date) === getLocalDateString(new Date());
   const isExplicitSave =
     session.isManualSnapshot ||
     session.pinned ||
@@ -1665,8 +1688,12 @@ document
 // Initialize on popup open
 (async () => {
   await loadThemePreference();
-  const { dateFormat: fmt } = await chrome.storage.sync.get('dateFormat');
+  const { dateFormat: fmt, userTimezone: tz } = await chrome.storage.sync.get({
+    dateFormat: 'dmy',
+    userTimezone: 'browser'
+  });
   dateFormat = fmt || 'dmy';
+  userTimezone = tz || 'browser';
   currentProfileKey =
     await getCurrentProfileKey();
   selectedProfileKey =

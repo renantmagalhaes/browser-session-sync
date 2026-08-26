@@ -155,6 +155,16 @@
               <option value="ymd">YYYY-MM-DD (2026-04-01)</option>
             </select>
           </div>
+          <div class="form-group">
+            <label for="userTimezone">Timezone:</label>
+            <input
+              type="text"
+              id="userTimezone"
+              placeholder="browser (follows system)"
+              title="IANA timezone name, e.g. Europe/Lisbon or America/New_York. Leave empty to follow the browser."
+            />
+            <small>Leave empty to use the browser/system timezone. Enter an IANA name (e.g. <code>Europe/Lisbon</code>) to override.</small>
+          </div>
         </fieldset>
 
         <!-- Sync Settings Section -->

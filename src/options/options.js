@@ -55,7 +55,8 @@ async function loadSettings() {
       "archiveRetention",
       "excludeLocalTabs",
       "lastSyncTime",
-      "dateFormat"
+      "dateFormat",
+      "userTimezone"
     ]);
 
   const local = await chrome.storage.local.get([
@@ -141,6 +142,8 @@ async function loadSettings() {
   }
   document.getElementById("dateFormat").value =
     settings.dateFormat || 'dmy';
+  document.getElementById("userTimezone").value =
+    (settings.userTimezone && settings.userTimezone !== "browser") ? settings.userTimezone : "";
   if (local.clientId) {
     document.getElementById(
       "clientId"
@@ -244,7 +247,9 @@ async function saveSettings() {
         "excludeLocalTabs"
       ).checked,
     dateFormat:
-      document.getElementById("dateFormat").value
+      document.getElementById("dateFormat").value,
+    userTimezone:
+      document.getElementById("userTimezone").value.trim() || "browser"
   };
 
   if (!settings.profileKey) {
